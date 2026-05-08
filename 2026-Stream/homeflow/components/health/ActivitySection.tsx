@@ -36,6 +36,11 @@ export function ActivitySection({ insight }: ActivitySectionProps) {
       <Text style={[styles.headline, { color: c.textPrimary }]}>
         {insight.headline}
       </Text>
+      {insight.windowLabel && (
+        <Text style={[styles.windowLabel, { color: c.textTertiary }]}>
+          {insight.windowLabel}
+        </Text>
+      )}
       <Text style={[styles.supporting, { color: c.textSecondary }]}>
         {insight.supportingText}
       </Text>
@@ -82,6 +87,13 @@ const styles = StyleSheet.create({
     fontSize: FontSize.titleSmall,
     fontWeight: FontWeight.bold,
     letterSpacing: 0.38,
+    marginBottom: 4,
+  },
+  windowLabel: {
+    fontSize: FontSize.caption ?? 12,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
     marginBottom: 4,
   },
   supporting: {

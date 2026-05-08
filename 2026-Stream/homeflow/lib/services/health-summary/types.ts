@@ -28,6 +28,8 @@ export interface ActivityInsight {
   steps: number;
   energyBurned: number;
   distance: number;
+  /** Optional caption shown under the headline, e.g. "3-day average". */
+  windowLabel?: string;
 }
 
 export interface VitalItem {
@@ -41,6 +43,8 @@ export interface VitalsInsight {
   supportingText?: string;
   status: InsightStatus;
   items: VitalItem[];
+  /** Optional caption shown under the headline, e.g. "3-day average". */
+  windowLabel?: string;
 }
 
 export interface HealthSummaryDay {

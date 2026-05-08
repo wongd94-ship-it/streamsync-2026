@@ -54,6 +54,14 @@ const HK = {
   oxygenSaturation: 'HKQuantityTypeIdentifierOxygenSaturation' as const,
   bodyMass: 'HKQuantityTypeIdentifierBodyMass' as const,
   height: 'HKQuantityTypeIdentifierHeight' as const,
+  walkingHeartRateAverage: 'HKQuantityTypeIdentifierWalkingHeartRateAverage' as const,
+  walkingSpeed: 'HKQuantityTypeIdentifierWalkingSpeed' as const,
+  walkingStepLength: 'HKQuantityTypeIdentifierWalkingStepLength' as const,
+  appleWalkingSteadiness: 'HKQuantityTypeIdentifierAppleWalkingSteadiness' as const,
+  sixMinuteWalkTestDistance: 'HKQuantityTypeIdentifierSixMinuteWalkTestDistance' as const,
+  uvExposure: 'HKQuantityTypeIdentifierUVExposure' as const,
+  vo2Max: 'HKQuantityTypeIdentifierVO2Max' as const,
+  timeInDaylight: 'HKQuantityTypeIdentifierTimeInDaylight' as const,
 };
 
 const ALL_READ_TYPES = [
@@ -71,6 +79,14 @@ const ALL_READ_TYPES = [
   HK.oxygenSaturation,
   HK.bodyMass,
   HK.height,
+  HK.walkingHeartRateAverage,
+  HK.walkingSpeed,
+  HK.walkingStepLength,
+  HK.appleWalkingSteadiness,
+  HK.sixMinuteWalkTestDistance,
+  HK.uvExposure,
+  HK.vo2Max,
+  HK.timeInDaylight,
 ];
 
 const WRITE_TYPES = [
@@ -270,21 +286,36 @@ export async function getSleep(range: DateRange): Promise<SleepNight[]> {
       }
     }
 
-    const totalSleepMinutes = coreMinutes + deepMinutes + remMinutes + asleepUndifferentiated;
-    const timeInBedMinutes = Math.max(inBedMinutes, totalSleepMinutes + awakeMinutes);
-    const sleepEfficiency = timeInBedMinutes > 0
-      ? Math.round((totalSleepMinutes / timeInBedMinutes) * 100)
-      : 0;
+    // Total time asleep includes detailed stages (Core/Deep/REM) PLUS the
+    // generic "asleepUndifferentiated" bucket that older iOS / non-Watch
+    // sleep sources report. Keeping them separate lets us flag whether
+    // detailed-stage data is present (Watch with iOS 16+) and downgrade
+    // the UI gracefully when only InBed/AsleepUnspecified are available.
+    const totalAsleepMinutes =
+      coreMinutes + deepMinutes + remMinutes + asleepUndifferentiated;
+    const totalInBedMinutes = Math.max(
+      inBedMinutes,
+      totalAsleepMinutes + awakeMinutes,
+    );
+    const sleepEfficiency =
+      totalInBedMinutes > 0 ?
+        Math.round((totalAsleepMinutes / totalInBedMinutes) * 100) :
+        0;
+    const hasDetailedStages = coreMinutes + deepMinutes + remMinutes > 0;
 
     nights.push({
       date,
-      timeInBedMinutes,
-      totalSleepMinutes,
-      awakeMinutes,
-      coreMinutes,
-      deepMinutes,
-      remMinutes,
+      totalAsleepMinutes,
+      totalInBedMinutes,
       sleepEfficiency,
+      hasDetailedStages,
+      stages: {
+        awake: awakeMinutes,
+        core: coreMinutes,
+        deep: deepMinutes,
+        rem: remMinutes,
+        asleepUndifferentiated,
+      },
       samples,
     });
   }
@@ -318,13 +349,23 @@ export async function getVitals(range: DateRange): Promise<VitalsDay[]> {
     const respStats = statsSamples(respByDay.get(date) ?? []);
     const oxygenStats = statsSamples(oxygenByDay.get(date) ?? []);
 
+    // Match the canonical VitalsDay shape — nested heartRate stats,
+    // `hrv` (not `heartRateVariabilitySDNN`). The previous flat-field
+    // implementation didn't match the type, so home-screen + Health-tab
+    // consumers reading `vitals.heartRate.average` and `vitals.hrv` got
+    // `undefined` and rendered "—". Same root-cause class as the sleep
+    // NaN bug; both wedge silently because the build doesn't gate on TS
+    // shape mismatches in this file.
     return {
       date,
-      heartRateAverage: hrStats.average || null,
-      heartRateMin: hrStats.min || null,
-      heartRateMax: hrStats.max || null,
+      heartRate: {
+        min: hrStats.min || 0,
+        max: hrStats.max || 0,
+        average: hrStats.average || 0,
+        sampleCount: hrStats.sampleCount || 0,
+      },
       restingHeartRate: restingStats.average || null,
-      heartRateVariabilitySDNN: hrvStats.average || null,
+      hrv: hrvStats.average || null,
       respiratoryRate: respStats.average || null,
       oxygenSaturation: oxygenStats.average || null,
     };
