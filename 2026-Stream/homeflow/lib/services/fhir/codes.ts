@@ -124,6 +124,19 @@ export const CONDITION_TEXT_PATTERNS = {
     'htn',
     'elevated blood pressure',
   ],
+  // Includes BPH itself + closely-related GU conditions + comorbidities
+  // and neurologic conditions that the BPH-study research team wants
+  // surfaced when reviewing a participant's chart. Comorbidities like
+  // diabetes / hypertension / obesity confound BPH outcomes; neurologic
+  // conditions can mimic BPH via neurogenic bladder.
+  //
+  // NOTE on classification order: matchTextToCategory() in
+  // condition-mapper.ts short-circuits on the FIRST matching category,
+  // checking diabetes → hypertension → bph in that order. So diabetes
+  // and hypertension still classify into their own buckets during
+  // prefill — listing them here only affects isBphCondition() in the
+  // Health tab, which uses these patterns to decide whether to show a
+  // condition in the BPH-Related Conditions section.
   bph: [
     'benign prostatic hyperplasia',
     'benign prostatic hypertrophy',
@@ -133,6 +146,50 @@ export const CONDITION_TEXT_PATTERNS = {
     'lower urinary tract symptoms',
     'luts',
     'prostate enlargement',
+    // Related GU conditions
+    'overactive bladder',
+    'oab',
+    'urinary retention',
+    'urinary incontinence',
+    'neurogenic bladder',
+    'prostatitis',
+    'prostate cancer',
+    'bladder cancer',
+    'urothelial carcinoma',
+    'recurrent urinary tract infection',
+    'recurrent uti',
+    'hematuria',
+    'nocturia',
+    // Comorbidities that confound BPH outcomes
+    'diabetes',
+    'diabetic',
+    'dm type',
+    'dm1',
+    'dm2',
+    'hypertension',
+    'hypertensive',
+    'high blood pressure',
+    'htn',
+    'obesity',
+    'obese',
+    'morbid obesity',
+    // Neurologic conditions (cause neurogenic bladder, mimic BPH)
+    'spinal cord injury',
+    'sci',
+    'paraplegia',
+    'quadriplegia',
+    'tetraplegia',
+    'spina bifida',
+    'multiple sclerosis',
+    "parkinson",
+    'parkinsonism',
+    'stroke',
+    'cerebrovascular accident',
+    'cva',
+    'dementia',
+    "alzheimer",
+    'peripheral neuropathy',
+    'diabetic neuropathy',
   ],
 } as const;
 

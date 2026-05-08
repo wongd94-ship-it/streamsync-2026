@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
-import { useRouter, type Href } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   collection,
@@ -24,6 +23,7 @@ import { useHealthSummary } from '@/hooks/use-health-summary';
 import { SleepSection } from '@/components/health/SleepSection';
 import { ActivitySection } from '@/components/health/ActivitySection';
 import { VitalsSection } from '@/components/health/VitalsSection';
+import { BphClinicalRecordsCard } from '@/components/health/BphClinicalRecordsCard';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAppTheme } from '@/lib/theme/ThemeContext';
 import { FontSize, FontWeight } from '@/lib/theme/typography';
@@ -88,7 +88,6 @@ export default function HealthScreen() {
 }
 
 function HealthContent() {
-  const router = useRouter();
   const { theme } = useAppTheme();
   const { colors: c } = theme;
   const { summary, isLoading, error } = useHealthSummary();
@@ -167,11 +166,8 @@ function HealthContent() {
 
   const notesEmptyText = useMemo(() => {
     if (notesLoading) return '';
-    if (!hasConnectedProvider) {
-      return 'Connect a health system to import recent clinical notes.';
-    }
     return 'No clinical notes available yet.';
-  }, [hasConnectedProvider, notesLoading]);
+  }, [notesLoading]);
 
   async function handleForceResync() {
     if (!connectedProviderId || resyncing) return;
@@ -223,7 +219,7 @@ function HealthContent() {
       <SafeAreaView style={[styles.container, { backgroundColor: c.background }]} edges={['top']}>
         <View style={styles.centered}>
           <Text style={[styles.emptyText, { color: c.textTertiary }]}>
-            No health data available yet. Wear your Apple Watch today and check back later.
+            No health data available yet. Check back after your devices have synced more data.
           </Text>
         </View>
       </SafeAreaView>
@@ -255,6 +251,13 @@ function HealthContent() {
         <View style={styles.spacerMedium} />
 
         {summary.vitals && <VitalsSection insight={summary.vitals} />}
+
+        <View style={styles.spacerMedium} />
+
+        {/* BPH-relevant medications, conditions, procedures — read from
+            users/{uid}/medical_history/current; participant can edit
+            inline. Audit fields stamped on every save. */}
+        <BphClinicalRecordsCard />
 
         <View style={styles.spacerMedium} />
 
@@ -320,16 +323,6 @@ function HealthContent() {
             </Text>
           )}
 
-          {!hasConnectedProvider && (
-            <TouchableOpacity
-              activeOpacity={0.7}
-              style={[styles.connectButton, { backgroundColor: c.accent }]}
-              onPress={() => router.push('/smart-connect' as Href)}
-            >
-              <Text style={styles.connectButtonText}>Connect Health System</Text>
-            </TouchableOpacity>
-          )}
-
           {__DEV__ && hasConnectedProvider && connectedProviderId ? (
             <TouchableOpacity
               activeOpacity={0.7}
@@ -370,6 +363,8 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 8,
+    // Clears the absolute-positioned liquid-glass tab bar.
+    paddingBottom: 120,
   },
   dateLabel: {
     fontSize: FontSize.footnote,
