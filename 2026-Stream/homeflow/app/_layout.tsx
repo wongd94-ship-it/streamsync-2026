@@ -12,13 +12,17 @@ RNLogBox.ignoreAllLogs();
 // Global CSS for web (theming for alert dialogs, etc.) - only processed on web
 import '@/assets/styles/global.css';
 import { bootstrapHealthKitSync } from '@/src/services/healthkitSync';
+import { registerHealthKitBackgroundSync } from '@/src/services/healthkitBackgroundSync';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '@/src/services/firebase';
 
-import { useOnboardingStatus } from '@/hooks/use-onboarding-status';
+import { useOnboardingStatus, useHasEverOnboarded } from '@/hooks/use-onboarding-status';
 import { useAuth } from '@/hooks/use-auth';
 import { useDataSyncCheck } from '@/hooks/use-data-sync-check';
 import { useIPSSTaskSetup } from '@/hooks/use-ipss-task-setup';
+import { useNotificationTapRouter } from '@/hooks/use-notification-tap-router';
+import { useExpoPushRegistration } from '@/hooks/use-expo-push-registration';
+import { useResearcherMessageBuzz } from '@/hooks/use-researcher-message-buzz';
 import { LoadingScreen } from '@/components/ui/loading-screen';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { StandardProvider, useStandard } from '@/lib/services/standard-context';
@@ -27,6 +31,7 @@ import { AppThemeProvider, useAppTheme } from '@/lib/theme/ThemeContext';
 // Module-level guards — survive Fast Refresh hot reloads (unlike useRef).
 const _bootstrappedUids = new Set<string>();
 const _throneSyncRequestedUids = new Set<string>();
+const _hkBgRegisteredUids = new Set<string>();
 
 export const unstable_settings = {
   // Initial route while loading
@@ -41,8 +46,31 @@ const DEV_BYPASS_AUTH = false;
  * Navigation stack with onboarding, auth, and main app routes
  */
 function RootLayoutNav() {
-  const onboardingComplete = useOnboardingStatus();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
+  // Per-uid onboarding state — passing user?.id ensures that a different
+  // account on the same device sees a fresh onboarding flow.
+  const onboardingComplete = useOnboardingStatus(user?.id ?? null);
+  // Device-level flag — has ANY user ever completed onboarding on this
+  // device? Combined with isAuthenticated it tells us whether an unauth
+  // user should land on login (device has history) or welcome (fresh
+  // install). Without this signal, the old router sent post-logout users
+  // back into the onboarding stack because the per-uid "complete" flag
+  // is false once they sign out.
+  const hasEverOnboarded = useHasEverOnboarded();
+
+  // Launch telemetry — one line per render during the first few seconds so
+  // future "why did I get redirected to login?" bugs can be diagnosed from
+  // device logs without a debugger attached.
+  useEffect(() => {
+    console.info('[launch]', JSON.stringify({
+      authLoading,
+      isAuthenticated,
+      onboardingComplete,
+      hasEverOnboarded,
+      uid: user?.id ?? null,
+      time: new Date().toISOString(),
+    }));
+  }, [authLoading, isAuthenticated, onboardingComplete, hasEverOnboarded, user?.id]);
 
   // Seed IPSS follow-up tasks at 1, 2, and 3 months post-surgery
   useIPSSTaskSetup();
@@ -55,16 +83,32 @@ function RootLayoutNav() {
     if (_bootstrappedUids.has(uid)) return;
     _bootstrappedUids.add(uid);
 
-    // Delay 4 s so the home screen's HealthKit queries (12 parallel reads) complete
-    // first. HealthKit serializes concurrent queries — without the delay the sync
-    // pipeline backs them up and the UI feels frozen on first load.
+    // Delay 8 s so the home screen's own HealthKit queries (12 parallel
+    // reads for the activity rings) get a fair shot at the HealthKit
+    // queue before the bootstrap sync piles on behind them. HealthKit
+    // serializes concurrent queries on one internal thread; without a
+    // generous head-start the tab bar and rings feel unresponsive for
+    // several seconds after a force-quit relaunch. bootstrapHealthKitSync
+    // itself also runs its metric syncs sequentially now.
     const timer = setTimeout(() => {
       bootstrapHealthKitSync().catch((err) =>
         console.error("[HealthKit] bootstrapHealthKitSync error:", err),
       );
-    }, 4000);
+    }, 8000);
 
     return () => clearTimeout(timer);
+  }, [user?.id]);
+
+  // Register HealthKit background delivery + BGTaskScheduler once per uid.
+  useEffect(() => {
+    const uid = user?.id;
+    if (!uid) return;
+    if (_hkBgRegisteredUids.has(uid)) return;
+    _hkBgRegisteredUids.add(uid);
+
+    registerHealthKitBackgroundSync().catch((err) =>
+      console.warn('[HealthKit BG] registration failed', err),
+    );
   }, [user?.id]);
 
   // On first open per uid: write a Firestore doc that triggers the Cloud Function
@@ -91,37 +135,67 @@ function RootLayoutNav() {
   // Run 48-hour data sync check only when user is fully in the app
   useDataSyncCheck(!!onboardingComplete && isAuthenticated);
 
+  // Route sync-alert notification taps to the AI Support chat. Only active
+  // once the user is fully past onboarding, so the redirect guards below
+  // don't cancel the navigation.
+  useNotificationTapRouter(!!onboardingComplete && isAuthenticated);
+
+  // Register an Expo push token for this device + user, saved to
+  // /users/{uid}.expoPushTokens. Picked up by the notifyOnSupportMessage
+  // Cloud Function so researcher messages buzz the phone in real time.
+  // No-ops on free Apple Developer tier (no Push Notifications capability);
+  // the foreground-listener fallback below covers that case.
+  useExpoPushRegistration(!!onboardingComplete && isAuthenticated);
+
+  // Foreground / recently-backgrounded fallback for researcher messages.
+  // Subscribes to the active support chat and fires a local notification
+  // whenever a new researcher message lands. Once Apple Dev is upgraded and
+  // remote push works, this still runs harmlessly — duplicate buzzes are
+  // suppressed by the per-chat unread-count tracking inside the hook.
+  useResearcherMessageBuzz(!!onboardingComplete && isAuthenticated);
+
   // While checking onboarding/auth status, show loading
-  if (onboardingComplete === null || authLoading) {
+  if (onboardingComplete === null || authLoading || hasEverOnboarded === null) {
     return <LoadingScreen />;
   }
 
   const authed = isAuthenticated || DEV_BYPASS_AUTH;
 
+  // Stack guards — block access to each group for obviously-wrong states,
+  // but leave them permissive enough that explicit user-initiated
+  // navigation (e.g. tapping "Sign Up" from the login screen) can reach
+  // any group. The DEFAULT landing on app launch is picked imperatively
+  // by app/index.tsx via <Redirect>, not by these guards.
+  //
+  //   - (onboarding) blocked only for authed+complete users. Unauth
+  //     users need access for fresh install AND for explicit Sign Up.
+  //     Authed+incomplete users need access to resume.
+  //   - (auth) blocked only for already-authenticated users.
+  //   - (tabs) requires both authenticated AND onboarding complete.
+  const blockOnboarding = authed && onboardingComplete === true;
+  const blockAuth = authed;
+  const blockTabs = !authed || onboardingComplete !== true;
+
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      {/* Onboarding flow - shown when not complete */}
+      {/* Onboarding flow */}
       <Stack.Screen
         name="(onboarding)"
-        options={{
-          animation: 'fade',
-        }}
-        redirect={onboardingComplete}
+        options={{ animation: 'fade' }}
+        redirect={blockOnboarding}
       />
 
-      {/* Auth flow - shown when onboarding complete but not signed in */}
+      {/* Auth flow */}
       <Stack.Screen
         name="(auth)"
-        options={{
-          animation: 'fade',
-        }}
-        redirect={!onboardingComplete || isAuthenticated}
+        options={{ animation: 'fade' }}
+        redirect={blockAuth}
       />
 
-      {/* Main app - shown when onboarding complete AND signed in (or dev bypass) */}
+      {/* Main app */}
       <Stack.Screen
         name="(tabs)"
-        redirect={!onboardingComplete || !authed}
+        redirect={blockTabs}
       />
 
       {/* Modal screens */}
@@ -142,10 +216,21 @@ function RootLayoutNav() {
         options={{ headerShown: false }}
       />
 
-      {/* Post-surgery recovery instructions (Stanford HoLEP discharge) */}
+      {/* Per-HealthKit-type status screen, replaces the old Data Permissions modal */}
       <Stack.Screen
-        name="post-surgery-recovery"
+        name="permissions-status"
         options={{ headerShown: false }}
+      />
+
+      {/* AI Support chat — opened by sync-alert notification taps and the
+          "Get Help" row in profile. Uses fullScreenModal (not the iOS sheet
+          'modal' style) so that the keyboard's reported frame is in the
+          same coordinate space as the screen — KeyboardAvoidingView's
+          offset=0 lines the input bar up flush against the keyboard. With
+          the sheet style, the keyboard appears to overlap the input. */}
+      <Stack.Screen
+        name="support-chat"
+        options={{ presentation: 'fullScreenModal', headerShown: false }}
       />
 
       {/* Index route for initial redirect */}

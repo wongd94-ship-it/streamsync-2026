@@ -1,29 +1,60 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
+import { Platform, StyleSheet, View } from 'react-native';
+import { BlurView } from 'expo-blur';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAppTheme } from '@/lib/theme/ThemeContext';
+import { SupportChatBubble } from '@/components/support-chat/SupportChatBubble';
+
+function LiquidGlassTabBarBackground() {
+  const { theme } = useAppTheme();
+  const { isDark } = theme;
+  // Strong blur with a light tonal overlay produces the Liquid-Glass look.
+  const overlay = isDark ? 'rgba(18,18,20,0.55)' : 'rgba(255,255,255,0.55)';
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      <BlurView
+        intensity={80}
+        tint={isDark ? 'dark' : 'light'}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: overlay }]} />
+    </View>
+  );
+}
 
 export default function TabLayout() {
   const { theme } = useAppTheme();
   const { isDark, colors } = theme;
 
   const activeTint = colors.accent;
-  const inactiveTint = '#8E8E93';
-  const tabBarBg = isDark ? '#1C1C1E' : '#F2F2F7';
-  const tabBarBorder = isDark ? '#38383A' : '#C6C6C8';
+  const inactiveTint = isDark ? '#8E8E93' : '#6B6B70';
 
   return (
+    <View style={styles.fill}>
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: activeTint,
         tabBarInactiveTintColor: inactiveTint,
         headerShown: false,
         tabBarButton: HapticTab,
+        // Transparent tab bar + liquid-glass background component. Setting
+        // `position: absolute` on iOS lets the blur sit over screen content
+        // like Apple's native tab bars do.
         tabBarStyle: {
-          backgroundColor: tabBarBg,
-          borderTopColor: tabBarBorder,
+          backgroundColor: 'transparent',
+          borderTopWidth: 0,
+          elevation: 0,
+          ...Platform.select({
+            ios: { position: 'absolute' },
+            default: {},
+          }),
+        },
+        tabBarBackground: () => <LiquidGlassTabBarBackground />,
+        tabBarLabelStyle: {
+          fontWeight: '600',
         },
       }}>
       <Tabs.Screen
@@ -48,13 +79,6 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="chat"
-        options={{
-          title: 'Chat Helper',
-          tabBarIcon: ({ color }) => <IconSymbol size={26} name="message.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="profile"
         options={{
           title: 'Profile',
@@ -66,7 +90,14 @@ export default function TabLayout() {
       <Tabs.Screen name="explore" options={{ href: null }} />
       <Tabs.Screen name="contacts" options={{ href: null }} />
       <Tabs.Screen name="schedule" options={{ href: null }} />
-      <Tabs.Screen name="recovery" options={{ href: null }} />
     </Tabs>
+    {/* Floating AI Support bubble — overlays every tab. Positioned by the
+        component itself so it sits just above the liquid-glass tab bar. */}
+    <SupportChatBubble />
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  fill: { flex: 1 },
+});

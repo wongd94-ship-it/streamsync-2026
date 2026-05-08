@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -9,24 +9,54 @@ import {
   Pressable,
   Linking,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
-import { useRouter, Href, useFocusEffect } from 'expo-router';
-import { useCallback } from 'react';
+import { useRouter, Href } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/hooks/use-auth';
-import {
-  DATA_PERMISSIONS_SUMMARY,
-  STUDY_COORDINATOR,
-} from '@/lib/consent/consent-document';
-import { getConnectedSmartProviderStatus } from '@/lib/services/smart';
+import { STUDY_COORDINATOR } from '@/lib/consent/consent-document';
+import { notifyStudyDatesChanged, useStudyDates } from '@/hooks/use-study-dates';
+import { OnboardingService } from '@/lib/services/onboarding-service';
+import { saveSurgeryDate, saveStudyTimeline } from '@/src/services/throneFirestore';
 import { useAppTheme, type AppearanceMode } from '@/lib/theme/ThemeContext';
 import { FontSize, FontWeight } from '@/lib/theme/typography';
-import { getAuth } from '@/src/services/firestore';
+import { StanfordColors } from '@/constants/theme';
+import { resyncHistoricalHealthKit, type BackfillProgress } from '@/src/services/healthkitSync';
+
+// Same lazy-load pattern used by the eligibility screen so the calendar is
+// optional at bundle time but renders when the package is present.
+let DateTimePicker: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  DateTimePicker = require('react-native-ui-datepicker').default;
+} catch {
+  // graceful degradation — the fallback copy is rendered if this is missing
+}
+
+function toIsoDay(date: Date): string {
+  return date.toISOString().split('T')[0];
+}
+
+function formatDate(date: Date): string {
+  return date.toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
 
 const APPEARANCE_OPTIONS: { value: AppearanceMode; label: string }[] = [
   { value: 'light', label: 'Light' },
   { value: 'dark', label: 'Dark' },
+];
+
+const RESYNC_OPTIONS: { days: number; label: string }[] = [
+  { days: 30, label: 'Last 30 days' },
+  { days: 60, label: 'Last 60 days' },
+  { days: 90, label: 'Last 90 days' },
+  { days: 120, label: 'Last 120 days' },
+  { days: 365, label: 'Last 1 year' },
 ];
 
 export default function ProfileScreen() {
@@ -34,43 +64,39 @@ export default function ProfileScreen() {
   const { colors: c } = theme;
   const router = useRouter();
   const { user, signOut } = useAuth();
-  const [showPermissionsModal, setShowPermissionsModal] = useState(false);
-  const [providerConnected, setProviderConnected] = useState(false);
-  const [providerName, setProviderName] = useState<string | null>(null);
-  const [providerTotalRecordCount, setProviderTotalRecordCount] = useState<number | null>(null);
-  const [providerLastSynced, setProviderLastSynced] = useState<Date | null>(null);
+  const study = useStudyDates();
+  // Profile-tab load instrumentation — one-line log at mount + when study
+  // data finishes loading so perf regressions are visible in device logs.
+  // Uses Date.now() (not performance.now) for portability across web + RN.
+  const mountedAtRef = React.useRef<number>(Date.now());
+  useEffect(() => {
+    console.info('[Profile]', JSON.stringify({
+      event: 'mount',
+      uid: user?.id ?? null,
+      time: new Date(mountedAtRef.current).toISOString(),
+    }));
+  }, [user?.id]);
+  useEffect(() => {
+    if (!study.isLoading) {
+      console.info('[Profile]', JSON.stringify({
+        event: 'study-dates-ready',
+        msSinceMount: Date.now() - mountedAtRef.current,
+      }));
+    }
+  }, [study.isLoading]);
+  const [showSurgeryDateModal, setShowSurgeryDateModal] = useState(false);
+  const [surgeryDateValue, setSurgeryDateValue] = useState<Date>(new Date());
+  const [savingSurgeryDate, setSavingSurgeryDate] = useState(false);
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncProgress, setResyncProgress] = useState<BackfillProgress | null>(null);
+  const [showResyncModal, setShowResyncModal] = useState(false);
 
-  // Refresh SMART connection status each time the profile tab comes into focus
-  // (e.g. user just connected from the smart-connect modal).
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      async function checkProviderConnection() {
-        const uid = getAuth().currentUser?.uid;
-        if (!uid) return;
-        try {
-          const connection = await getConnectedSmartProviderStatus(uid);
-          if (cancelled) return;
-          if (connection) {
-            setProviderConnected(true);
-            setProviderName(connection.providerName);
-            setProviderTotalRecordCount(connection.totalRecordCount);
-            setProviderLastSynced(connection.lastSyncedAt ? new Date(connection.lastSyncedAt) : null);
-          } else {
-            setProviderConnected(false);
-            setProviderName(null);
-            setProviderTotalRecordCount(null);
-            setProviderLastSynced(null);
-          }
-        } catch {
-          // Silently ignore — user just sees "Not connected"
-        }
-      }
-      checkProviderConnection();
-      return () => { cancelled = true; };
-    }, []),
-  );
-
+  // INVARIANT: this is the ONLY path that takes an authenticated user back
+  // to the login screen. App-launch routing must not call signOut() — the
+  // Firebase Auth session is persisted via getReactNativePersistence in
+  // lib/firebase.ts, and the per-uid onboarding flag is written by
+  // OnboardingService.complete(uid). Keep this confined here so that
+  // reopening the app always lands the user on the dashboard.
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
@@ -87,6 +113,94 @@ export default function ProfileScreen() {
         },
       },
     ]);
+  };
+
+  // The in-Profile "Re-request HealthKit Permissions" affordance moved to
+  // the /permissions-status screen alongside the per-type status matrix
+  // (see app/permissions-status.tsx). Kept here as a stub-free tree so the
+  // Profile tab has one less Firestore/HealthKit reason to re-render.
+
+  const handleOpenResyncModal = () => {
+    if (resyncing) return;
+    if (!user?.id) {
+      Alert.alert('Sign in required', 'Sign in before re-syncing your HealthKit data.');
+      return;
+    }
+    setShowResyncModal(true);
+  };
+
+  const runResync = async (lookbackDays: number) => {
+    setShowResyncModal(false);
+    setResyncing(true);
+    setResyncProgress(null);
+    try {
+      const result = await resyncHistoricalHealthKit({
+        lookbackDays,
+        onProgress: (p) => setResyncProgress(p),
+      });
+
+      const windowLabel = lookbackDays === 365 ? '1 year' : `${lookbackDays} days`;
+      if (result.ok) {
+        Alert.alert(
+          'Historical data synced',
+          `Pulled ${windowLabel} of history. Uploaded ${result.totalWritten} new sample(s). ${result.totalSkipped} already existed and were left untouched.`,
+        );
+      } else {
+        const failedMetrics = Object.entries(result.perMetric)
+          .filter(([, r]) => r.error)
+          .map(([m]) => m)
+          .join(', ');
+        Alert.alert(
+          'Partial sync',
+          `Pulled ${windowLabel} of history. Uploaded ${result.totalWritten} new sample(s). Some metrics failed: ${failedMetrics || 'unknown'}.`,
+        );
+      }
+    } catch (error: any) {
+      Alert.alert('Re-sync failed', error?.message || 'Please try again.');
+    } finally {
+      setResyncing(false);
+      setResyncProgress(null);
+    }
+  };
+
+  const handleSaveSurgeryDate = async () => {
+    if (!user?.id) {
+      Alert.alert('Unavailable', 'You need to be signed in to update your study timeline.');
+      return;
+    }
+    const isoDay = toIsoDay(surgeryDateValue);
+
+    setSavingSurgeryDate(true);
+    try {
+      await saveSurgeryDate(user.id, isoDay);
+      const data = await OnboardingService.getData();
+      await saveStudyTimeline(user.id, {
+        studyPathway: 'surgery',
+        anchorDateType: 'surgery',
+        surgeryDate: isoDay,
+        urodynamicsDate: data.eligibility?.urodynamicsDate ?? null,
+      });
+      await OnboardingService.updateData({
+        eligibility: {
+          ...data.eligibility,
+          hasIPhone: data.eligibility?.hasIPhone ?? true,
+          hasBPHDiagnosis: data.eligibility?.hasBPHDiagnosis ?? true,
+          consideringSurgery: true,
+          hasPlannedUrodynamicStudy: data.eligibility?.hasPlannedUrodynamicStudy ?? true,
+          isEligible: data.eligibility?.isEligible ?? true,
+          studyPathway: 'surgery',
+          anchorDateType: 'surgery',
+          surgeryDate: isoDay,
+          urodynamicsDate: data.eligibility?.urodynamicsDate,
+        },
+      });
+      notifyStudyDatesChanged();
+      setShowSurgeryDateModal(false);
+    } catch (error: any) {
+      Alert.alert('Unable to Save', error?.message || 'Please try again.');
+    } finally {
+      setSavingSurgeryDate(false);
+    }
   };
 
   return (
@@ -120,6 +234,37 @@ export default function ProfileScreen() {
               Not signed in.
             </Text>
           )}
+        </View>
+
+        <View style={[styles.card, { backgroundColor: c.card }]}>
+          <View style={styles.cardHeader}>
+            <IconSymbol name="calendar.badge.clock" size={17} color={c.accent} />
+            <Text style={[styles.cardLabel, { color: c.textSecondary }]}>Study Timeline</Text>
+          </View>
+          <Text style={[styles.accountName, { color: c.textPrimary }]}>
+            {study.pathwayLabel}
+          </Text>
+          <Text style={[styles.accountEmail, { color: c.textSecondary }]}>
+            {study.phaseLabel}
+          </Text>
+          <Text style={[styles.placeholderText, { color: c.textTertiary, marginTop: 10 }]}>
+            {study.timelineCaption}
+          </Text>
+          {study.canTransitionToSurgery && !study.surgery.date ? (
+            <TouchableOpacity
+              style={[styles.contactButton, { backgroundColor: c.background, marginTop: 14 }]}
+              onPress={() => {
+                setSurgeryDateValue(new Date());
+                setShowSurgeryDateModal(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="calendar.badge.plus" size={15} color={c.accent} />
+              <Text style={[styles.contactButtonText, { color: c.textSecondary }]}>
+                Add surgery date
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {/* 2. Appearance — iOS-style segmented control */}
@@ -176,7 +321,7 @@ export default function ProfileScreen() {
 
           <TouchableOpacity
             style={styles.rowButton}
-            onPress={() => setShowPermissionsModal(true)}
+            onPress={() => router.push('/permissions-status' as Href)}
             activeOpacity={0.7}
           >
             <View style={styles.rowLeft}>
@@ -187,59 +332,86 @@ export default function ProfileScreen() {
             </View>
             <IconSymbol name="chevron.right" size={14} color={c.textTertiary} />
           </TouchableOpacity>
-        </View>
 
-        {/* 3b. Health Records */}
-        <View style={[styles.card, { backgroundColor: c.card }]}>
+          <View style={[styles.rowDivider, { backgroundColor: c.separator }]} />
+
           <TouchableOpacity
             style={styles.rowButton}
-            onPress={() => router.push('/smart-connect' as Href)}
+            onPress={handleOpenResyncModal}
+            disabled={resyncing}
             activeOpacity={0.7}
           >
             <View style={styles.rowLeft}>
-              <IconSymbol name="doc.text.fill" size={18} color={c.accent} />
-              <View>
+              <IconSymbol name="arrow.triangle.2.circlepath" size={18} color={c.accent} />
+              <View style={{ flex: 1 }}>
                 <Text style={[styles.rowLabel, { color: c.textPrimary }]}>
-                  Health Records
+                  Re-sync HealthKit Data
                 </Text>
-                <Text style={[styles.rowSublabel, { color: c.textTertiary }]}>
-                  {providerConnected
-                    ? `Connected${providerName ? ` · ${providerName}` : ''}`
-                    : 'Not connected — tap to set up'}
-                </Text>
+                {resyncing ? (
+                  <Text style={[styles.rowSublabel, { color: c.textTertiary }]}>
+                    {resyncProgress
+                      ? `Syncing ${resyncProgress.metric}… ${resyncProgress.written} new, ${resyncProgress.skipped} existing`
+                      : 'Starting…'}
+                  </Text>
+                ) : (
+                  <Text style={[styles.rowSublabel, { color: c.textTertiary }]}>
+                    Pulls missing historical data; never overwrites.
+                  </Text>
+                )}
               </View>
+            </View>
+            {resyncing ? (
+              <ActivityIndicator size="small" color={c.accent} />
+            ) : (
+              <IconSymbol name="chevron.right" size={14} color={c.textTertiary} />
+            )}
+          </TouchableOpacity>
+
+          <View style={[styles.rowDivider, { backgroundColor: c.separator }]} />
+
+          <TouchableOpacity
+            style={styles.rowButton}
+            onPress={() => router.push('/privacy-policy' as Href)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowLeft}>
+              <IconSymbol name="hand.raised.shield.fill" size={18} color={c.accent} />
+              <Text style={[styles.rowLabel, { color: c.textPrimary }]}>
+                Privacy Policy
+              </Text>
             </View>
             <IconSymbol name="chevron.right" size={14} color={c.textTertiary} />
           </TouchableOpacity>
-
-          {providerConnected && (
-            <>
-              <View style={[styles.rowDivider, { backgroundColor: c.separator }]} />
-              <TouchableOpacity
-                style={styles.rowButton}
-                onPress={() => router.push('/smart-connect' as Href)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.rowLeft}>
-                  <IconSymbol name="doc.text.fill" size={18} color={c.textSecondary} />
-                  <View>
-                    <Text style={[styles.rowLabel, { color: c.textSecondary }]}>
-                      Sync Records
-                    </Text>
-                    <Text style={[styles.rowSublabel, { color: c.textTertiary }]}>
-                      {providerLastSynced
-                        ? `Last synced ${providerLastSynced.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${providerTotalRecordCount !== null ? ` · ${providerTotalRecordCount} record${providerTotalRecordCount === 1 ? '' : 's'}` : ''}`
-                        : providerTotalRecordCount !== null ? `${providerTotalRecordCount} record${providerTotalRecordCount === 1 ? '' : 's'} imported` : 'Re-authenticate to pull fresh records'}
-                    </Text>
-                  </View>
-                </View>
-                <IconSymbol name="chevron.right" size={14} color={c.textTertiary} />
-              </TouchableOpacity>
-            </>
-          )}
         </View>
 
-        {/* 4. Contact / Support */}
+        {/* 4a. AI-assisted help — opens the same chat the sync-alert
+            notification routes to, with triggerReason "participant-initiated"
+            so Claude knows the participant came in unprompted. */}
+        <TouchableOpacity
+          style={[styles.card, { backgroundColor: c.card }]}
+          onPress={() =>
+            router.push({
+              pathname: '/support-chat',
+              params: { trigger: 'participant-initiated' },
+            } as unknown as Href)
+          }
+          activeOpacity={0.7}
+        >
+          <View style={styles.cardHeader}>
+            <IconSymbol name="message.fill" size={17} color={c.textSecondary} />
+            <Text style={[styles.cardLabel, { color: c.textSecondary }]}>
+              Get help with sync issues
+            </Text>
+          </View>
+          <Text style={[styles.contactName, { color: c.textPrimary }]}>
+            Chat with StreamSync Support
+          </Text>
+          <Text style={[styles.contactRole, { color: c.textTertiary }]}>
+            AI Assistant — answers in seconds, escalates to the research team if needed
+          </Text>
+        </TouchableOpacity>
+
+        {/* 4b. Contact / Support */}
         <View style={[styles.card, { backgroundColor: c.card }]}>
           <View style={styles.cardHeader}>
             <IconSymbol name="phone.fill" size={17} color={c.textSecondary} />
@@ -292,54 +464,138 @@ export default function ProfileScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
 
-      {/* Data Permissions modal */}
       <Modal
-        visible={showPermissionsModal}
+        visible={showResyncModal}
         animationType="slide"
         transparent
-        onRequestClose={() => setShowPermissionsModal(false)}
+        onRequestClose={() => setShowResyncModal(false)}
       >
         <Pressable
           style={styles.modalOverlay}
-          onPress={() => setShowPermissionsModal(false)}
+          onPress={() => setShowResyncModal(false)}
         >
           <Pressable
             style={[styles.modalContent, { backgroundColor: c.card }]}
             onPress={() => {}}
           >
             <View style={styles.modalHandle} />
-            <IconSymbol
-              name="lock.shield.fill"
-              size={32}
-              color={c.semanticSuccess}
-              style={{ alignSelf: 'center', marginBottom: 16 }}
-            />
             <Text style={[styles.modalTitle, { color: c.textPrimary }]}>
-              Data Permissions
+              Re-sync HealthKit Data
             </Text>
-            <Text style={[styles.modalSubhead, { color: c.textTertiary }]}>
-              What this app can access:
+            <Text style={[styles.modalSubhead, { color: c.textTertiary, textAlign: 'center' }]}>
+              Choose how far back to pull historical data. Samples already uploaded will not be overwritten.
             </Text>
-            {DATA_PERMISSIONS_SUMMARY.map((item, index) => (
-              <View key={index} style={styles.bulletRow}>
-                <View style={[styles.bullet, { backgroundColor: c.textTertiary }]} />
-                <Text style={[styles.bulletText, { color: c.textSecondary }]}>
-                  {item}
+
+            {RESYNC_OPTIONS.map((opt) => (
+              <TouchableOpacity
+                key={opt.days}
+                style={[styles.resyncOption, { backgroundColor: c.background, borderColor: c.separator }]}
+                onPress={() => runResync(opt.days)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.resyncOptionLabel, { color: c.textPrimary }]}>
+                  {opt.label}
                 </Text>
-              </View>
+                <IconSymbol name="chevron.right" size={14} color={c.textTertiary} />
+              </TouchableOpacity>
             ))}
+
             <TouchableOpacity
-              style={[styles.modalButton, { backgroundColor: c.accent }]}
-              onPress={() => setShowPermissionsModal(false)}
+              style={[styles.modalButton, { backgroundColor: c.secondaryFill, marginTop: 12 }]}
+              onPress={() => setShowResyncModal(false)}
               activeOpacity={0.7}
             >
-              <Text style={styles.modalButtonText}>
-                Got It
+              <Text style={[styles.modalButtonText, { color: c.textPrimary }]}>
+                Cancel
               </Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={showSurgeryDateModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowSurgeryDateModal(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setShowSurgeryDateModal(false)}
+        >
+          <Pressable
+            style={[styles.modalContent, { backgroundColor: c.card }]}
+            onPress={() => {}}
+          >
+            <View style={styles.modalHandle} />
+            <Text style={[styles.modalTitle, { color: c.textPrimary }]}>
+              Select Surgery Date
+            </Text>
+            <Text style={[styles.modalSubhead, { color: c.textTertiary }]}>
+              Pick the day of your scheduled BPH surgery. Your study timeline will move into the BPH surgery pathway.
+            </Text>
+
+            <View style={[styles.selectedDateRow, { backgroundColor: c.background, borderColor: c.separator }]}>
+              <IconSymbol name="calendar" size={18} color={c.accent} />
+              <Text style={[styles.selectedDateText, { color: c.textPrimary }]}>
+                {formatDate(surgeryDateValue)}
+              </Text>
+            </View>
+
+            <View style={styles.calendarWrap}>
+              {DateTimePicker ? (
+                <DateTimePicker
+                  mode="single"
+                  date={surgeryDateValue}
+                  onChange={({ date }: { date: any }) => {
+                    if (!date) return;
+                    const native =
+                      date instanceof Date
+                        ? date
+                        : new Date(typeof date.valueOf === 'function' ? date.valueOf() : date);
+                    setSurgeryDateValue(native);
+                  }}
+                  styles={{
+                    day_label: { color: c.textPrimary },
+                    outside_label: { color: c.textTertiary },
+                    disabled_label: { color: c.textTertiary, opacity: 0.35 },
+                    weekday_label: { color: c.textSecondary },
+                    month_selector_label: { color: c.textPrimary, fontWeight: '600' },
+                    year_selector_label: { color: c.textPrimary, fontWeight: '600' },
+                    today: {
+                      borderWidth: 1,
+                      borderColor: StanfordColors.cardinal,
+                      borderRadius: 999,
+                    },
+                    today_label: { color: StanfordColors.cardinal },
+                    selected: { backgroundColor: StanfordColors.cardinal, borderRadius: 999 },
+                    selected_label: { color: '#FFFFFF', fontWeight: '600' },
+                  }}
+                />
+              ) : (
+                <Text style={[styles.placeholderText, { color: c.textTertiary, textAlign: 'center' }]}>
+                  Calendar unavailable. Please update the app and try again.
+                </Text>
+              )}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.modalButton, { backgroundColor: c.accent, opacity: savingSurgeryDate ? 0.7 : 1 }]}
+              onPress={handleSaveSurgeryDate}
+              activeOpacity={0.7}
+              disabled={savingSurgeryDate}
+            >
+              <Text style={styles.modalButtonText}>
+                {savingSurgeryDate ? 'Saving...' : 'Save Surgery Date'}
+              </Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Data Permissions modal retired in favor of /permissions-status route.
+          The per-type status matrix (with iOS read-permission-quirk copy)
+          lives at app/permissions-status.tsx. */}
     </SafeAreaView>
   );
 }
@@ -354,6 +610,9 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 8,
+    // Leaves room for the liquid-glass tab bar (position: absolute) so the
+    // sign-out button isn't hidden behind it.
+    paddingBottom: 120,
   },
   screenTitle: {
     fontSize: FontSize.display,
@@ -559,5 +818,36 @@ const styles = StyleSheet.create({
     fontSize: FontSize.headline,
     fontWeight: FontWeight.semibold,
     color: '#FFFFFF',
+  },
+  selectedDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginBottom: 6,
+  },
+  selectedDateText: {
+    fontSize: FontSize.body,
+    fontWeight: FontWeight.semibold,
+  },
+  calendarWrap: {
+    marginBottom: 8,
+  },
+  resyncOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: 8,
+  },
+  resyncOptionLabel: {
+    fontSize: FontSize.body,
+    fontWeight: FontWeight.medium,
   },
 });
