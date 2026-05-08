@@ -28,11 +28,83 @@ service cloud.firestore {
     }
 
     // ── Dashboard config (researcher read-only, Admin SDK write) ─────────────
-    // Stores hkTestUid, studyId, researcherProfile — never written by clients.
+    // Stores hkTestUid, studyId, researcherProfile, support_chat threshold.
+    //
+    // Researchers can update support_chat (sync threshold tuning); everything
+    // else stays Admin-SDK-only. The support_chat doc is intentionally narrow —
+    // only `syncThresholdHours` and `updatedAt` may be written, and only by a
+    // researcher. This is the one piece of dashboard-tunable config that the
+    // claudeSupportChat Cloud Function reads on every turn.
 
     match /config/{docId} {
+      // Most config is researcher-only; support_chat is also readable by
+      // any signed-in participant so the iOS app can mirror the dashboard's
+      // sync-alert threshold without a round-trip through a Cloud Function.
+      // The doc carries no PHI — only a number — so this is safe.
+      allow read: if (docId == 'support_chat' && request.auth != null) || isResearcher();
+      allow write: if docId == 'support_chat'
+        && isResearcher()
+        && request.resource.data.keys().hasOnly(['syncThresholdHours', 'updatedAt', 'updatedBy'])
+        && request.resource.data.syncThresholdHours is number
+        && request.resource.data.syncThresholdHours > 0
+        && request.resource.data.syncThresholdHours <= 720;
+    }
+
+    // ── AI Support Chats ─────────────────────────────────────────────────────
+    // Chats are owned conceptually by a participant (participantId), but every
+    // chat document write goes through the claudeSupportChat Cloud Function so
+    // the PII firewall is enforced server-side. Researchers write directly into
+    // the messages subcollection (their direct participant outreach is the only
+    // client-side write path); this is gated by the role: "researcher" check.
+
+    match /supportChats/{chatId} {
+      allow read: if request.auth != null
+        && (resource == null
+            || resource.data.participantId == request.auth.uid
+            || isResearcher());
+      // Status changes (e.g. researcher marking the chat resolved) — narrow
+      // allowlist so researchers can't accidentally rewrite participantId or
+      // historical context snapshots.
+      allow update: if isResearcher()
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'lastActivity', 'researcherNote', 'resolvedAt', 'resolvedBy']);
+      // Researchers may create a thread directly from the dashboard. The
+      // claudeSupportChat Cloud Function uses admin SDK and bypasses these
+      // rules entirely, so participant-side AI chats still flow through it
+      // and inherit the PII firewall.
+      allow create: if isResearcher()
+        && request.resource.data.keys().hasOnly([
+          'participantId', 'triggerReason', 'status',
+          'createdAt', 'lastActivity', 'createdBy', 'contextSnapshot',
+        ])
+        && request.resource.data.participantId is string
+        && request.resource.data.participantId.size() > 0
+        && request.resource.data.triggerReason == 'researcher-initiated'
+        && request.resource.data.status == 'open';
+      allow delete: if false; // never deletable — supportChats are part of the audit trail
+
+      match /messages/{messageId} {
+        allow read: if request.auth != null
+          && (get(/databases/$(database)/documents/supportChats/$(chatId)).data.participantId == request.auth.uid
+              || isResearcher());
+        // Researchers may post messages directly so participants see them
+        // appear via the snapshot listener. Their messages MUST carry
+        // role="researcher". Cloud Function (admin SDK) handles assistant +
+        // participant turns.
+        allow create: if isResearcher()
+          && request.resource.data.role == 'researcher'
+          && request.resource.data.content is string
+          && request.resource.data.content.size() > 0
+          && request.resource.data.content.size() <= 4000;
+        allow update, delete: if false;
+      }
+    }
+
+    // ── Nightly support-chat summaries (researcher read, Cloud Fn write) ─────
+
+    match /nightly_summaries/{date} {
       allow read:  if isResearcher();
-      allow write: if false; // Admin SDK / Firebase Console only
+      allow write: if false; // Scheduled Cloud Function only
     }
 
     // ── Audit log (researcher write, no client reads) ─────────────────────────
@@ -43,12 +115,18 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
-    // ── Patient registry (researcher-managed, used by dashboard) ─────────────
-    // Researchers read/write this collection to register study participants.
-    // Patients have no access to it.
+    // ── Patient registry (researcher-read, Cloud Function writes only) ──────
+    // Researchers READ this collection from the dashboard, but every write
+    // flows through a Cloud Function callable (createParticipant,
+    // claimParticipant, requestPathwayChange, confirmPathwayChange) so that
+    // PHI validation, duplicate detection, pathway enum enforcement, and the
+    // sacred Throne-email invariant are all centralized. Clients — even
+    // researchers — cannot write directly. Participants cannot read this
+    // collection; they read the non-PHI mirror at /users/{uid} instead.
 
     match /patients/{patientId} {
-      allow read, write: if isResearcher();
+      allow read:  if isResearcher();
+      allow write: if false; // Admin SDK (Cloud Function callables) only
     }
 
     // ── User profiles ─────────────────────────────────────────────────────────
@@ -59,16 +137,42 @@ service cloud.firestore {
 
       // Only allow writing a narrow set of patient-owned profile fields to the
       // root profile document. Researchers cannot overwrite patient profiles.
+      //
+      // NOTE: PHI fields (firstName, lastName, email, phoneNumber) remain in
+      // this allowlist during the transitional period — existing signup code
+      // still writes them. The Cross-cutting PHI-strip task removes them
+      // after all app write-sites have migrated to the non-PHI mirror shape.
+      //
+      // pathway / studyId / upcomingVisit / throneAccountLinked are mirror
+      // fields written ONLY by Cloud Function callables via Admin SDK (which
+      // bypasses these rules), so they are NOT added here — a client that
+      // tried to forge its own pathway change would be rejected.
+      // `currentPhase` is app-managed (the app derives it from study dates).
       allow write: if isOwner(uid)
         && request.resource.data.keys().hasOnly([
           'throneUserId',
           'throneUserIdSetAt',
+          'throneAccountEmail',
           'name',
           'displayName',
           'firstName',
           'lastName',
           'email',
           'phoneNumber',
+          'currentPhase',
+          // onboardingComplete is a cross-device signal written by
+          // OnboardingService.complete(uid). Used by other devices /
+          // fresh app installs to skip re-onboarding when the same
+          // user signs back in.
+          'onboardingComplete',
+          'onboardingCompletedAt',
+          // expoPushTokens is the list of Expo push tokens registered
+          // by this user's installs. Written by the iOS app via
+          // useExpoPushRegistration on first authed launch; pruned by
+          // the notifyOnSupportMessage Cloud Function via admin SDK
+          // when Expo reports DeviceNotRegistered.
+          'expoPushTokens',
+          'expoPushTokenUpdatedAt',
           'updatedAt',
           'createdAt'
         ]);
@@ -96,29 +200,25 @@ service cloud.firestore {
       }
 
       // ── HealthKit data (written by device, read by owner + researcher) ──────
+      //
+      // One generic rule covers EVERY hk_* subcollection (sample collections
+      // like hk_heartRate, hk_walkingSpeed, hk_sixMinuteWalkTestDistance …
+      // AND the hk_sync cursor collection). This avoids a fragile rule-per-
+      // metric setup — previously any metric in METRIC_CONFIG without a
+      // matching rule here had its sync silently rejected by Firestore,
+      // which was the root cause of walkingDistance / 6MWT / walkingSpeed /
+      // walkingStepLength / vo2Max / etc. showing zero docs in Firestore
+      // even though the client was querying HealthKit successfully.
+      //
+      // The regex is anchored on a non-hk_ prefix check via the collection
+      // wildcard; non-hk_ sibling collections (clinical_notes, throne_*,
+      // consent_response, study_timeline, etc.) fall through to their own
+      // explicit rules below and are not affected by this match block.
 
-      match /hk_heartRate/{sampleId} {
-        allow read:       if isOwner(uid) || isResearcher();
-        allow write:      if isOwner(uid);
-      }
-
-      match /hk_stepCount/{sampleId} {
-        allow read:       if isOwner(uid) || isResearcher();
-        allow write:      if isOwner(uid);
-      }
-
-      match /hk_sleepAnalysis/{sampleId} {
-        allow read:       if isOwner(uid) || isResearcher();
-        allow write:      if isOwner(uid);
-      }
-
-      match /hk_heartRateVariabilitySDNN/{sampleId} {
-        allow read:       if isOwner(uid) || isResearcher();
-        allow write:      if isOwner(uid);
-      }
-
-      match /hk_sync/{metricType} {
-        allow read, write: if isOwner(uid);
+      match /{hkCollection}/{docId} {
+        allow read:  if hkCollection.matches('^hk_.*')
+                     && (isOwner(uid) || isResearcher());
+        allow write: if hkCollection.matches('^hk_.*') && isOwner(uid);
       }
 
       // ── Throne sync requests (written by app, triggers Cloud Function) ───────
@@ -165,6 +265,11 @@ service cloud.firestore {
         allow write: if isOwner(uid);
       }
 
+      match /urodynamics_date/{docId} {
+        allow read:  if isOwner(uid) || isResearcher();
+        allow write: if isOwner(uid);
+      }
+
       match /consent_response/{docId} {
         allow read:  if isOwner(uid) || isResearcher();
         allow write: if isOwner(uid);
@@ -187,6 +292,25 @@ service cloud.firestore {
 
     match /throneSync/{studyId} {
       allow read, write: if false;
+    }
+
+    // ── Enrollment registry used by the mobile onboarding flow ────────────────
+    // Participants register their own email → Firebase UID mapping here so the
+    // research export roster can be generated without console-side backfills.
+    // Restrict create/update to the signed-in user whose email matches the doc.
+    match /throne_research_participants/{email} {
+      allow read: if isResearcher();
+      allow create, update: if request.auth != null
+        && request.resource.data.firebaseUid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'email',
+          'throneAccountEmail',
+          'firebaseUid',
+          'enrolledAt',
+          'throneAccountCreated',
+          'lastSyncAt'
+        ]);
+      allow delete: if false;
     }
 
     // Researchers can enumerate enrolled users via throneUserMap.
