@@ -51,7 +51,7 @@ export const CONSENT_DOCUMENT: ConsentDocument = {
       id: 'overview',
       title: 'Study Overview',
       required: true,
-      content: `You are invited to participate in a research study on benign prostatic hyperplasia (BPH) and lower urinary tract symptoms. This study is being conducted at ${STUDY_INFO.institution} to evaluate whether relief of bladder outlet obstruction can improve objective quality of life and activity measures using wearable devices and home uroflow measurement.
+      content: `You are invited to participate in a research study on benign prostatic hyperplasia (BPH) and lower urinary tract symptoms. This study is being conducted across multiple academic medical centers to evaluate whether relief of bladder outlet obstruction can improve objective quality of life and activity measures using wearable devices and home uroflow measurement.
 
 **Protocol Title:** ${STUDY_INFO.name}
 
@@ -73,7 +73,7 @@ export const CONSENT_DOCUMENT: ConsentDocument = {
 
 \u2022 Registration and setup, including study screening, consent, initial surveys, and mobile application setup (approximately 30 minutes).
 
-\u2022 Use of a wearable device (such as a smartwatch) that you already own. You will be asked to wear the device daily and allow data collected by the device to be shared with the study team through a Stanford-designed research application.
+\u2022 Use of a wearable device (such as a smartwatch) that you already own. You will be asked to wear the device daily and allow data collected by the device to be shared with the study team through the StreamSync research application.
 
 \u2022 Installation and use of a smart toilet\u2013based uroflow measurement device (Throne One) attached to your home toilet. You will be asked to record as many voids as possible during a one-week period.
 
@@ -134,7 +134,7 @@ You may choose not to participate or to withdraw from the study at any time with
 ${STUDY_INFO.principalInvestigator}
 Phone: ${STUDY_INFO.contactPhone}
 
-You may also contact the ${STUDY_INFO.institution} Institutional Review Board (IRB) for independent information about your rights as a research participant.`,
+You may also contact the study's Institutional Review Board (IRB) of record for independent information about your rights as a research participant. Contact details for the IRB of record are provided by your enrolling site's research coordinator.`,
     },
   ],
 };

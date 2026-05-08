@@ -9,7 +9,16 @@ export const STORAGE_KEYS = {
   // Onboarding
   ONBOARDING_STEP: '@homeflow_onboarding_step',
   ONBOARDING_DATA: '@homeflow_onboarding_data',
+  // Legacy global finished flag — retained so the migration shim in
+  // OnboardingService.initialize() can detect and promote it to the per-uid
+  // key. New writes should use userOnboardingFinishedKey(uid).
   ONBOARDING_FINISHED: '@homeflow_onboarding_finished',
+  // Global flag: has ANY user ever completed onboarding on this device?
+  // Never cleared automatically. Used by the root router to decide where to
+  // send an unauthenticated user — if someone has onboarded here before, we
+  // show the login screen (not the welcome/onboarding flow). If nobody has
+  // ever completed, we show the fresh onboarding flow.
+  ONBOARDING_HAS_EVER_COMPLETED: '@homeflow_onboarding_has_ever_completed',
 
   // Consent
   CONSENT_GIVEN: '@homeflow_consent_given',
@@ -47,6 +56,16 @@ export const STORAGE_KEYS = {
 // Legacy keys for backwards compatibility
 export const ONBOARDING_COMPLETED_KEY = '@onboarding_completed';
 export const CONSENT_KEY = '@consent_given';
+
+/**
+ * Build the per-uid onboarding-complete key. Keyed by Firebase uid so that
+ * multiple accounts on the same device don't cross-contaminate completion
+ * state — if user A completes onboarding and signs out, user B's sign-in
+ * still surfaces a fresh onboarding flow.
+ */
+export function userOnboardingFinishedKey(uid: string): string {
+  return `@homeflow_onboarding_finished:${uid}`;
+}
 
 /**
  * Onboarding steps - defines the flow order
@@ -100,12 +119,29 @@ export const DEMO_THRONE_UID = 'CUziuLyPtDNO2IvSbsifXPKrNEk2';
 
 /**
  * Study information
+ *
+ * The participant-facing app is INSTITUTIONALLY AGNOSTIC by design — we
+ * may recruit from multiple academic medical centers, so user-facing
+ * copy never names a specific university as the study's host. The
+ * `institution` field below is retained only as a structural placeholder
+ * for the consent document's `STUDY_DOCUMENT.institution` field; it
+ * doesn't appear in any user-rendered string.
+ *
+ * The Apple Developer team that ships the iOS binary (and therefore
+ * "owns" the app for App Store distribution purposes) belongs to the
+ * University of Nevada, Reno — see `docs/APPLE_DEVELOPER_HANDOFF.md`.
+ * That ownership is reflected in distribution metadata, not in the
+ * runtime UX.
+ *
+ * TODO: populate `irbProtocol` once the lead-site IRB issues the
+ * protocol number. Multi-center studies typically have one IRB of record
+ * (often via SMART IRB reciprocal review); use that protocol number.
  */
 export const STUDY_INFO = {
   name: 'StreamSync BPH Study',
-  institution: 'Stanford University',
-  principalInvestigator: 'Ryan Sun, MD',
-  irbProtocol: 'IRB# [TODO: fill in]', // TODO: replace with actual IRB approval number
+  institution: 'Multi-center BPH Research Consortium',
+  principalInvestigator: 'Daniel Wong, MD',
+  irbProtocol: 'IRB# TBD',
   contactEmail: 'info@streamsyncresearch.com',
   contactPhone: '713-677-1764',
 } as const;
