@@ -10,30 +10,42 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { initializeAuth, getReactNativePersistence, getAuth } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyCA2UXlewWfadoemw4EinfMLyif6PgPyj4',
-  authDomain: 'streamsync-8ae79.firebaseapp.com',
-  projectId: 'streamsync-8ae79',
-  storageBucket: 'streamsync-8ae79.firebasestorage.app',
-  messagingSenderId: '295202330543',
-  appId: '1:295202330543:web:9088db3e1f27518597015a',
-};
-
-function fromEnv(name: string, fallback: string): string {
+/**
+ * Firebase config is read from EXPO_PUBLIC_FIREBASE_* env vars at build time.
+ * No hardcoded fallbacks — a missing var fails the build loudly so we never
+ * accidentally ship the literal-string default that was previously checked in
+ * (see git history pre-2026-05-10 for the deletion). Local dev: copy
+ * .env.example → .env and fill in your Firebase Web SDK config from
+ * https://console.firebase.google.com/project/<project-id>/settings/general.
+ *
+ * Even though Google documents Web SDK config as "not strictly secret"
+ * (security comes from referrer/bundle-id restrictions + Firestore rules),
+ * we keep the key out of source so:
+ *   1. We can rotate it without touching the codebase.
+ *   2. Different deployment environments (dev / staging / prod) can use
+ *      different keys with different restrictions.
+ *   3. Forks of the public repo don't ship our specific project config.
+ */
+function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value || value.startsWith('YOUR_FIREBASE_')) {
-    return fallback;
+    throw new Error(
+      `[Firebase] Missing required env var "${name}". ` +
+        'Copy .env.example to .env at 2026-Stream/homeflow/ and fill in your ' +
+        'Firebase Web SDK config from console.firebase.google.com → Project ' +
+        'settings → General → Your apps → Firebase SDK snippet (Config).',
+    );
   }
   return value;
 }
 
 const firebaseConfig = {
-  apiKey: fromEnv('EXPO_PUBLIC_FIREBASE_API_KEY', DEFAULT_FIREBASE_CONFIG.apiKey),
-  authDomain: fromEnv('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN', DEFAULT_FIREBASE_CONFIG.authDomain),
-  projectId: fromEnv('EXPO_PUBLIC_FIREBASE_PROJECT_ID', DEFAULT_FIREBASE_CONFIG.projectId),
-  storageBucket: fromEnv('EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET', DEFAULT_FIREBASE_CONFIG.storageBucket),
-  messagingSenderId: fromEnv('EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID', DEFAULT_FIREBASE_CONFIG.messagingSenderId),
-  appId: fromEnv('EXPO_PUBLIC_FIREBASE_APP_ID', DEFAULT_FIREBASE_CONFIG.appId),
+  apiKey: requireEnv('EXPO_PUBLIC_FIREBASE_API_KEY'),
+  authDomain: requireEnv('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN'),
+  projectId: requireEnv('EXPO_PUBLIC_FIREBASE_PROJECT_ID'),
+  storageBucket: requireEnv('EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: requireEnv('EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID'),
+  appId: requireEnv('EXPO_PUBLIC_FIREBASE_APP_ID'),
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();

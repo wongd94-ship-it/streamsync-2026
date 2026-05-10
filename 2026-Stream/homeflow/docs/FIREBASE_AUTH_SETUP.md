@@ -10,8 +10,8 @@ auth/requests-from-referer-<empty>-are-blocked
 ```
 
 This happens because the Firebase JS SDK sends requests with an empty HTTP
-Referer header, and the production API key
-(`AIzaSyCA2UXlewWfadoemw4EinfMLyif6PgPyj4`) has "HTTP referrers" restrictions
+Referer header, and the production API key (the value of
+`EXPO_PUBLIC_FIREBASE_API_KEY` in `.env`) has "HTTP referrers" restrictions
 set in Google Cloud Console → APIs & Services → Credentials.
 
 There are two supported fixes — pick one based on whether you're doing local
@@ -63,8 +63,8 @@ Fix the API-key restriction in Google Cloud Console so React Native requests
 are accepted.
 
 1. Open https://console.cloud.google.com/apis/credentials?project=streamsync-8ae79
-2. Find the API key used by the iOS app
-   (`AIzaSyCA2UXlewWfadoemw4EinfMLyif6PgPyj4`) and click **Edit**.
+2. Find the API key used by the iOS app (the value of
+   `EXPO_PUBLIC_FIREBASE_API_KEY` in your local `.env`) and click **Edit**.
 3. Under **Application restrictions**:
    - **Current requirement for this app:** choose **None**.
      StreamSync currently uses the Firebase JavaScript SDK inside React Native,

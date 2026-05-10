@@ -1,0 +1,36 @@
+# Defense-in-depth: the homeflow subproject already has its own .gitignore
+# covering .env files, but this top-level file ensures that no .env, key,
+# or credential file accidentally lands in git from a different working
+# directory (e.g. a future package added alongside homeflow).
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+!.env.*.template
+!*.env.template
+
+# Service-account keys and signing material
+*-firebase-adminsdk-*.json
+service-account*.json
+*.p8
+*.p12
+*.pem
+*.key
+
+# Firebase deploy caches
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+
+# Local Claude Code settings (per-developer, not team config)
+.claude/settings.local.json
+.claude/worktrees/
+
+# macOS junk
+.DS_Store
+**/.DS_Store
+
+# Editor temp
+*.swp
+*.swo

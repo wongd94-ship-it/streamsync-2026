@@ -1,35 +1,39 @@
 /**
  * Firebase Client SDK initialization for StreamSync.
- * This config is safe to include in client code (public Firebase config).
+ *
+ * Config is read from EXPO_PUBLIC_FIREBASE_* env vars at build time. No
+ * hardcoded fallbacks — a missing var fails the build loudly. The literal-
+ * string default that used to live here was removed on 2026-05-10 after a
+ * deleted Firebase Web API key was found in git history; the canonical
+ * implementation now lives in lib/firebase.ts and the rationale is
+ * documented there. This file deliberately mirrors that pattern so the
+ * dual-init path (lib/firebase initializes auth, src/services/firebase
+ * initializes Firestore) stays consistent.
  */
 
 import {initializeApp, getApps, getApp} from "firebase/app";
 import {getFirestore} from "firebase/firestore";
 
-const DEFAULT_FIREBASE_CONFIG = {
-  projectId: "streamsync-8ae79",
-  appId: "1:295202330543:web:9088db3e1f27518597015a",
-  storageBucket: "streamsync-8ae79.firebasestorage.app",
-  apiKey: "AIzaSyCA2UXlewWfadoemw4EinfMLyif6PgPyj4",
-  authDomain: "streamsync-8ae79.firebaseapp.com",
-  messagingSenderId: "295202330543",
-};
-
-function fromEnv(name: string, fallback: string): string {
+function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value || value.startsWith("YOUR_FIREBASE_")) {
-    return fallback;
+    throw new Error(
+      `[Firebase] Missing required env var "${name}". Copy ` +
+        ".env.example to .env at 2026-Stream/homeflow/ and fill in your " +
+        "Firebase Web SDK config (Project settings → Your apps → Firebase " +
+        "SDK snippet (Config) in the Firebase Console).",
+    );
   }
   return value;
 }
 
 const firebaseConfig = {
-  projectId: fromEnv("EXPO_PUBLIC_FIREBASE_PROJECT_ID", DEFAULT_FIREBASE_CONFIG.projectId),
-  appId: fromEnv("EXPO_PUBLIC_FIREBASE_APP_ID", DEFAULT_FIREBASE_CONFIG.appId),
-  storageBucket: fromEnv("EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET", DEFAULT_FIREBASE_CONFIG.storageBucket),
-  apiKey: fromEnv("EXPO_PUBLIC_FIREBASE_API_KEY", DEFAULT_FIREBASE_CONFIG.apiKey),
-  authDomain: fromEnv("EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN", DEFAULT_FIREBASE_CONFIG.authDomain),
-  messagingSenderId: fromEnv("EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID", DEFAULT_FIREBASE_CONFIG.messagingSenderId),
+  projectId: requireEnv("EXPO_PUBLIC_FIREBASE_PROJECT_ID"),
+  appId: requireEnv("EXPO_PUBLIC_FIREBASE_APP_ID"),
+  storageBucket: requireEnv("EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET"),
+  apiKey: requireEnv("EXPO_PUBLIC_FIREBASE_API_KEY"),
+  authDomain: requireEnv("EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN"),
+  messagingSenderId: requireEnv("EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID"),
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
