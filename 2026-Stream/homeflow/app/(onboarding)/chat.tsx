@@ -6,7 +6,7 @@
  * in the medical-history screen.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -33,6 +33,7 @@ try {
 }
 
 type YesNo = 'yes' | 'no' | null;
+type StudyPathwayChoice = 'surgery' | 'uds' | null;
 
 function formatDate(date: Date): string {
   return date.toLocaleDateString('en-US', {
@@ -49,11 +50,23 @@ export default function OnboardingChatScreen() {
   const colors = Colors[colorScheme ?? 'light'];
 
   const [bphDiagnosis, setBphDiagnosis] = useState<YesNo>(null);
-  const [surgerySched, setSurgerySched] = useState<YesNo>(null);
+  const [studyPathway, setStudyPathway] = useState<StudyPathwayChoice>(null);
   const [surgeryDate, setSurgeryDate] = useState<Date>(new Date());
-  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [udsDate, setUdsDate] = useState<Date>(new Date());
+  const [showSurgeryPicker, setShowSurgeryPicker] = useState(false);
+  const [showUdsPicker, setShowUdsPicker] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
-  const canContinue = bphDiagnosis === 'yes' && surgerySched === 'yes';
+  const canContinue = bphDiagnosis === 'yes' && studyPathway !== null;
+
+  // When the pathway's calendar opens, scroll the full calendar into view.
+  useEffect(() => {
+    if (!showSurgeryPicker && !showUdsPicker) return;
+    const t = setTimeout(() => {
+      scrollRef.current?.scrollToEnd({ animated: true });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [showSurgeryPicker, showUdsPicker]);
 
   const cardBg = isDark ? '#1C1C1E' : '#F2F2F7';
   const noButtonBg = isDark ? '#2C2C2E' : '#E5E5EA';
@@ -69,27 +82,32 @@ export default function OnboardingChatScreen() {
     }
   };
 
-  const handleSurgerySelect = (value: YesNo) => {
-    setSurgerySched(value);
-    if (value === 'no') {
-      setTimeout(() => {
-        router.replace('/(onboarding)/ineligible' as Href);
-      }, 400);
-    }
+  const handlePathwaySelect = (value: StudyPathwayChoice) => {
+    setStudyPathway(value);
+    setShowSurgeryPicker(value === 'surgery');
+    setShowUdsPicker(value === 'uds');
   };
 
   const handleContinue = async () => {
-    const dateStr = surgerySched === 'yes'
+    const surgeryDateStr = studyPathway === 'surgery'
       ? surgeryDate.toISOString().split('T')[0]
       : undefined;
+    const udsDateStr = studyPathway === 'uds'
+      ? udsDate.toISOString().split('T')[0]
+      : undefined;
+    const anchorDateType: 'surgery' | 'uds' = studyPathway === 'surgery' ? 'surgery' : 'uds';
 
     await OnboardingService.updateData({
       eligibility: {
         hasIPhone: true,
         hasBPHDiagnosis: bphDiagnosis === 'yes',
-        consideringSurgery: surgerySched === 'yes',
+        consideringSurgery: studyPathway === 'surgery',
+        hasPlannedUrodynamicStudy: studyPathway === 'uds',
         isEligible: canContinue,
-        surgeryDate: dateStr,
+        studyPathway: studyPathway ?? undefined,
+        anchorDateType,
+        surgeryDate: surgeryDateStr,
+        urodynamicsDate: udsDateStr,
       },
     });
 
@@ -107,6 +125,7 @@ export default function OnboardingChatScreen() {
       </View>
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
@@ -147,103 +166,60 @@ export default function OnboardingChatScreen() {
           </View>
         </View>
 
-        {/* ── Q2: Surgery Scheduled ── */}
+        {/* ── Q2: Study Pathway ── */}
         <View style={[styles.card, { backgroundColor: cardBg }]}>
           <Text style={[styles.questionText, { color: colors.text }]}>
-            Do you have a scheduled bladder outlet surgery?
+            Which study pathway are you entering?
           </Text>
           <Text style={[styles.questionSubtext, { color: colors.icon }]}>
-            Such as TURP, HoLEP, GreenLight laser, UroLift, Rezum, or Aquablation
+            Please select only one. Participants begin with either scheduled urodynamics or scheduled BPH surgery.
           </Text>
-          <View style={styles.yesNoRow}>
-            <YesNoButton
-              label="Yes"
-              selected={surgerySched === 'yes'}
-              onPress={() => handleSurgerySelect('yes')}
-              selectedBg={StanfordColors.cardinal}
-              unselectedBg={noButtonBg}
-              unselectedText={noButtonText}
+          <View style={styles.pathwayColumn}>
+            <PathwayOption
+              title="Scheduled BPH Surgery"
+              description="Choose this if you already have BPH surgery scheduled."
+              selected={studyPathway === 'surgery'}
+              onPress={() => handlePathwaySelect('surgery')}
+              colors={colors}
+              cardBg={noButtonBg}
             />
-            <YesNoButton
-              label="No"
-              selected={surgerySched === 'no'}
-              onPress={() => handleSurgerySelect('no')}
-              selectedBg={StanfordColors.cardinal}
-              unselectedBg={noButtonBg}
-              unselectedText={noButtonText}
+            <PathwayOption
+              title="Scheduled Urodynamic Testing"
+              description="Choose this if you are entering the study for urodynamics and do not yet have surgery scheduled."
+              selected={studyPathway === 'uds'}
+              onPress={() => handlePathwaySelect('uds')}
+              colors={colors}
+              cardBg={noButtonBg}
             />
           </View>
         </View>
 
-        {/* ── Q3: Surgery Date (shown when surgery is confirmed) ── */}
-        {surgerySched === 'yes' && (
-          <View style={[styles.card, { backgroundColor: cardBg }]}>
-            <Text style={[styles.questionText, { color: colors.text }]}>
-              When is your surgery scheduled?
-            </Text>
+        {/* ── Q3a: Surgery Date ── */}
+        {studyPathway === 'surgery' && (
+          <AnchorDateCard
+            label="When is your surgery scheduled?"
+            date={surgeryDate}
+            onChange={setSurgeryDate}
+            expanded={showSurgeryPicker}
+            onToggle={() => setShowSurgeryPicker((prev) => !prev)}
+            cardBg={cardBg}
+            dateInputBg={dateInputBg}
+            colors={colors}
+          />
+        )}
 
-            {/* Tappable date display row */}
-            <TouchableOpacity
-              style={[styles.dateInput, { backgroundColor: dateInputBg }]}
-              onPress={() => setShowDatePicker((prev) => !prev)}
-              activeOpacity={0.7}
-            >
-              <IconSymbol name={'calendar' as any} size={20} color={colors.icon} />
-              <Text style={[styles.dateText, { color: colors.text }]}>
-                {formatDate(surgeryDate)}
-              </Text>
-              <IconSymbol
-                name={(showDatePicker ? 'chevron.up' : 'chevron.down') as any}
-                size={14}
-                color={colors.icon}
-              />
-            </TouchableOpacity>
-
-            {/* Inline calendar */}
-            {showDatePicker && (
-              <View style={styles.calendarWrap}>
-                {DateTimePicker ? (
-                  <DateTimePicker
-                    mode="single"
-                    date={surgeryDate}
-                    onChange={({ date }: { date: any }) => {
-                      if (date) {
-                        // react-native-ui-datepicker returns a Dayjs object,
-                        // not a native Date. Convert via valueOf() (epoch ms).
-                        const nativeDate =
-                          date instanceof Date
-                            ? date
-                            : new Date(typeof date.valueOf === 'function' ? date.valueOf() : date);
-                        setSurgeryDate(nativeDate);
-                        setShowDatePicker(false);
-                      }
-                    }}
-                    styles={{
-                      // Day grid
-                      day_label:            { color: colors.text },
-                      outside_label:        { color: colors.icon },
-                      disabled_label:       { color: colors.icon, opacity: 0.35 },
-                      // Weekday header row
-                      weekday_label:        { color: colors.icon },
-                      // Month / year selectors in header
-                      month_selector_label: { color: colors.text, fontWeight: '600' },
-                      year_selector_label:  { color: colors.text, fontWeight: '600' },
-                      // Today highlight (unfilled ring)
-                      today:                { borderWidth: 1, borderColor: StanfordColors.cardinal, borderRadius: 999 },
-                      today_label:          { color: StanfordColors.cardinal },
-                      // Selected day — filled cardinal circle
-                      selected:             { backgroundColor: StanfordColors.cardinal, borderRadius: 999 },
-                      selected_label:       { color: '#FFFFFF', fontWeight: '600' },
-                    }}
-                  />
-                ) : (
-                  <Text style={[styles.pickerFallback, { color: colors.icon }]}>
-                    Date picker not available. Install react-native-ui-datepicker.
-                  </Text>
-                )}
-              </View>
-            )}
-          </View>
+        {/* ── Q3b: UDS Date ── */}
+        {studyPathway === 'uds' && (
+          <AnchorDateCard
+            label="When is your urodynamic study scheduled?"
+            date={udsDate}
+            onChange={setUdsDate}
+            expanded={showUdsPicker}
+            onToggle={() => setShowUdsPicker((prev) => !prev)}
+            cardBg={cardBg}
+            dateInputBg={dateInputBg}
+            colors={colors}
+          />
         )}
       </ScrollView>
 
@@ -285,6 +261,133 @@ function YesNoButton({ label, selected, onPress, selectedBg, unselectedBg, unsel
         {label}
       </Text>
     </TouchableOpacity>
+  );
+}
+
+function PathwayOption({
+  title,
+  description,
+  selected,
+  onPress,
+  colors,
+  cardBg,
+}: {
+  title: string;
+  description: string;
+  selected: boolean;
+  onPress: () => void;
+  colors: typeof Colors.light;
+  cardBg: string;
+}) {
+  return (
+    <TouchableOpacity
+      style={[
+        styles.pathwayOption,
+        {
+          backgroundColor: selected ? 'rgba(140, 21, 21, 0.10)' : cardBg,
+          borderColor: selected ? StanfordColors.cardinal : 'transparent',
+        },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.8}
+    >
+      <View style={styles.pathwayOptionTop}>
+        <Text style={[styles.pathwayTitle, { color: colors.text }]}>{title}</Text>
+        <View
+          style={[
+            styles.pathwayCheck,
+            {
+              borderColor: selected ? StanfordColors.cardinal : colors.icon,
+              backgroundColor: selected ? StanfordColors.cardinal : 'transparent',
+            },
+          ]}
+        >
+          {selected ? <IconSymbol name={'checkmark' as any} size={12} color="#FFFFFF" /> : null}
+        </View>
+      </View>
+      <Text style={[styles.pathwayDescription, { color: colors.icon }]}>{description}</Text>
+    </TouchableOpacity>
+  );
+}
+
+interface AnchorDateCardProps {
+  label: string;
+  date: Date;
+  onChange: (date: Date) => void;
+  expanded: boolean;
+  onToggle: () => void;
+  cardBg: string;
+  dateInputBg: string;
+  colors: { text: string; icon: string };
+}
+
+function AnchorDateCard({
+  label,
+  date,
+  onChange,
+  expanded,
+  onToggle,
+  cardBg,
+  dateInputBg,
+  colors,
+}: AnchorDateCardProps) {
+  return (
+    <View style={[styles.card, { backgroundColor: cardBg }]}>
+      <Text style={[styles.questionText, { color: colors.text }]}>{label}</Text>
+
+      <TouchableOpacity
+        style={[styles.dateInput, { backgroundColor: dateInputBg }]}
+        onPress={onToggle}
+        activeOpacity={0.7}
+      >
+        <IconSymbol name={'calendar' as any} size={20} color={colors.icon} />
+        <Text style={[styles.dateText, { color: colors.text }]}>{formatDate(date)}</Text>
+        <IconSymbol
+          name={(expanded ? 'chevron.up' : 'chevron.down') as any}
+          size={14}
+          color={colors.icon}
+        />
+      </TouchableOpacity>
+
+      {expanded && (
+        <View style={styles.calendarWrap}>
+          {DateTimePicker ? (
+            <DateTimePicker
+              mode="single"
+              date={date}
+              onChange={({ date: newDate }: { date: any }) => {
+                if (newDate) {
+                  const nativeDate =
+                    newDate instanceof Date
+                      ? newDate
+                      : new Date(
+                          typeof newDate.valueOf === 'function' ? newDate.valueOf() : newDate,
+                        );
+                  onChange(nativeDate);
+                  onToggle();
+                }
+              }}
+              styles={{
+                day_label:            { color: colors.text },
+                outside_label:        { color: colors.icon },
+                disabled_label:       { color: colors.icon, opacity: 0.35 },
+                weekday_label:        { color: colors.icon },
+                month_selector_label: { color: colors.text, fontWeight: '600' },
+                year_selector_label:  { color: colors.text, fontWeight: '600' },
+                today:                { borderWidth: 1, borderColor: StanfordColors.cardinal, borderRadius: 999 },
+                today_label:          { color: StanfordColors.cardinal },
+                selected:             { backgroundColor: StanfordColors.cardinal, borderRadius: 999 },
+                selected_label:       { color: '#FFFFFF', fontWeight: '600' },
+              }}
+            />
+          ) : (
+            <Text style={[styles.pickerFallback, { color: colors.icon }]}>
+              Date picker not available. Install react-native-ui-datepicker.
+            </Text>
+          )}
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -352,6 +455,38 @@ const styles = StyleSheet.create({
   yesNoRow: {
     flexDirection: 'row',
     gap: 10,
+  },
+  pathwayColumn: {
+    gap: 10,
+  },
+  pathwayOption: {
+    borderWidth: 1.5,
+    borderRadius: 16,
+    padding: Spacing.md,
+  },
+  pathwayOptionTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+    marginBottom: 6,
+  },
+  pathwayTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  pathwayDescription: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  pathwayCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   yesNoBtn: {
     flex: 1,

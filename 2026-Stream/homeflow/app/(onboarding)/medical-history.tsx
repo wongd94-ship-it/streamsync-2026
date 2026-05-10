@@ -1,17 +1,17 @@
 /**
  * Medical History Screen
  *
- * Displays medical history pulled from connected SMART health systems plus Apple Health demographics
- * and asks the patient
- * to confirm their information section by section.
+ * Displays medical history pulled from Apple Health clinical records and demographics
+ * and asks the patient to confirm their information section by section.
  *
  * Flow:
- *   1. Loading: fetch SMART clinical records + HealthKit demographics in parallel
+ *   1. Loading: fetch HealthKit demographics
  *      (falls back to mock data in dev mode if no records are connected)
- *   2. Reviewing: 3-step confirmation UI
- *      Step 0 — Demographics (age, sex)
- *      Step 1 — Current Medications (grouped by drug class)
- *      Step 2 — Surgical History (BPH procedures + other surgeries)
+ *   2. Reviewing: 4-step confirmation UI
+ *      Step 0 — Demographics (age, sex, phone, ethnicity, race)
+ *      Step 1 — Current Medications
+ *      Step 2 — Surgical History
+ *      Step 3 — Conditions
  *   3. Complete: show confirmation screen and navigate to baseline survey
  */
 
@@ -33,14 +33,13 @@ import { useRouter, Href } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, StanfordColors, Spacing } from '@/constants/theme';
 import { OnboardingStep } from '@/lib/constants';
-import { OnboardingService, type OnboardingData } from '@/lib/services/onboarding-service';
+import { OnboardingService } from '@/lib/services/onboarding-service';
 import { OnboardingProgressBar, ContinueButton } from '@/components/onboarding';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { getDemographics } from '@/lib/services/healthkit/HealthKitClient';
+import { getAllClinicalRecords } from '@/lib/services/healthkit';
 import {
   buildMedicalHistoryPrefill,
-  type ClinicalRecordsInput,
-  type HealthKitDemographics,
   type MedicalHistoryPrefill,
 } from '@/lib/services/fhir';
 import { BPH_DRUGS } from '@/lib/services/fhir/codes';
@@ -49,7 +48,6 @@ import {
   saveMedicalHistory,
   saveUserProfile,
 } from '@/src/services/throneFirestore';
-import { syncSmartClinicalData } from '@/lib/services/smart/client';
 import { getAuth } from '@/src/services/firestore';
 import { syncFhirPrefill } from '@/src/services/fhirPrefillSync';
 import { ConsentService } from '@/lib/services/consent-service';
@@ -58,15 +56,13 @@ import { ConsentService } from '@/lib/services/consent-service';
 
 type MedicalHistoryPhase = 'loading' | 'reviewing' | 'complete';
 
-const STEP_TITLES = ['Demographics', 'Current Medications', 'Surgical History', 'Lab Results', 'Conditions', 'Clinical Measurements'] as const;
+const STEP_TITLES = ['Demographics', 'Current Medications', 'Surgical History', 'Conditions'] as const;
 
 const STEP_DESCRIPTIONS = [
   'Your basic information from Apple Health.',
   'Medications found in your health records.',
   'Past procedures found in your health records.',
-  'Recent lab results found in your health records.',
   'Medical conditions found in your health records.',
-  'Bladder and urinary function measurements.',
 ] as const;
 
 const SEX_OPTIONS = [
@@ -92,7 +88,7 @@ const RACE_OPTIONS = [
   'Prefer not to say',
 ] as const;
 
-type DemoStage = 'name' | 'ethnicity' | 'race' | 'done';
+type DemoStage = 'ethnicity' | 'race' | 'done';
 type PickerField = 'ethnicity' | 'race' | 'biologicalSex';
 
 // Common patient-facing names for surgical procedures, matched by keyword
@@ -175,16 +171,6 @@ type EditableCondItem = {
   name: string;
 };
 
-type EditableValueItem = {
-  id: string;
-  label: string;
-  value: string;
-  description: string;
-  unit?: string;
-  date?: string;
-  referenceRange?: string;
-};
-
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function formatShortDate(dateStr: string | undefined): string {
@@ -200,51 +186,6 @@ function formatShortDate(dateStr: string | undefined): string {
 function capitalize(str: string): string {
   if (!str) return str;
   return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-function mergeClinicalInputs(
-  primary: ClinicalRecordsInput,
-  secondary: ClinicalRecordsInput | null,
-): ClinicalRecordsInput {
-  if (!secondary) return primary;
-
-  const mergeGroup = (
-    first: Array<{ displayName: string; fhirResource?: Record<string, unknown> }>,
-    second: Array<{ displayName: string; fhirResource?: Record<string, unknown> }>,
-  ) => {
-    const seen = new Set<string>();
-    const merged: Array<{ displayName: string; fhirResource?: Record<string, unknown> }> = [];
-
-    for (const record of [...first, ...second]) {
-      const resourceId = typeof record.fhirResource?.id === 'string' ? record.fhirResource.id : '';
-      const key = `${resourceId}|${record.displayName}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(record);
-    }
-
-    return merged;
-  };
-
-  return {
-    medications: mergeGroup(primary.medications, secondary.medications),
-    labResults: mergeGroup(primary.labResults, secondary.labResults),
-    conditions: mergeGroup(primary.conditions, secondary.conditions),
-    procedures: mergeGroup(primary.procedures, secondary.procedures),
-  };
-}
-
-function mergeDemographics(
-  primary: { age: number | null; dateOfBirth: string | null; biologicalSex: string | null },
-  secondary: { age: number | null; dateOfBirth: string | null; biologicalSex: string | null } | null,
-) {
-  if (!secondary) return primary;
-
-  return {
-    age: primary.age ?? secondary.age,
-    dateOfBirth: primary.dateOfBirth ?? secondary.dateOfBirth,
-    biologicalSex: primary.biologicalSex ?? secondary.biologicalSex,
-  };
 }
 
 // ── Shared sub-components (module-level to prevent remount on re-render) ──────
@@ -468,7 +409,6 @@ export default function MedicalHistoryScreen() {
   const [phase, setPhase] = useState<MedicalHistoryPhase>('loading');
   const [reviewStep, setReviewStep] = useState(0);
   const [prefillData, setPrefillData] = useState<MedicalHistoryPrefill | null>(null);
-  const [providerConnection, setProviderConnection] = useState<OnboardingData['providerConnection'] | null>(null);
 
   // Demographics sequential input state
   const [demoName, setDemoName] = useState('');
@@ -477,9 +417,7 @@ export default function MedicalHistoryScreen() {
   const [demoBiologicalSex, setDemoBiologicalSex] = useState('');
   const [demoEthnicity, setDemoEthnicity] = useState('');
   const [demoRace, setDemoRace] = useState('');
-  const [demoNamePrefilled, setDemoNamePrefilled] = useState(false);
-  const [demoStage, setDemoStage] = useState<DemoStage>('name');
-  const [demoEditingField, setDemoEditingField] = useState<'name' | null>(null);
+  const [demoStage, setDemoStage] = useState<DemoStage>('ethnicity');
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerField, setPickerField] = useState<PickerField>('ethnicity');
 
@@ -494,12 +432,8 @@ export default function MedicalHistoryScreen() {
 
   const [otherConds, setOtherConds] = useState<EditableCondItem[]>([]);
   const [editableHealthConds, setEditableHealthConds] = useState<EditableCondItem[]>([]);
-  const [editableLabs, setEditableLabs] = useState<EditableValueItem[]>([]);
-  const [editableMeasurements, setEditableMeasurements] = useState<EditableValueItem[]>([]);
   const [editingCondId, setEditingCondId] = useState<string | null>(null);
   const [editingCondValue, setEditingCondValue] = useState('');
-  const [editingValueId, setEditingValueId] = useState<string | null>(null);
-  const [editingValueText, setEditingValueText] = useState('');
 
   const [confirmedDemoFields, setConfirmedDemoFields] = useState<Set<string>>(new Set());
   const [confirmedMedIds, setConfirmedMedIds] = useState<Set<string>>(new Set());
@@ -508,10 +442,6 @@ export default function MedicalHistoryScreen() {
   const [rejectedProcIds, setRejectedProcIds] = useState<Set<string>>(new Set());
   const [confirmedCondIds, setConfirmedCondIds] = useState<Set<string>>(new Set());
   const [rejectedCondIds, setRejectedCondIds] = useState<Set<string>>(new Set());
-  const [confirmedLabIds, setConfirmedLabIds] = useState<Set<string>>(new Set());
-  const [rejectedLabIds, setRejectedLabIds] = useState<Set<string>>(new Set());
-  const [confirmedMeasurementIds, setConfirmedMeasurementIds] = useState<Set<string>>(new Set());
-  const [rejectedMeasurementIds, setRejectedMeasurementIds] = useState<Set<string>>(new Set());
 
   const stepFade = useRef(new Animated.Value(1)).current;
   const confirmFade = useRef(new Animated.Value(0)).current;
@@ -521,37 +451,39 @@ export default function MedicalHistoryScreen() {
     && prefillData?.demographics.age.value != null;
   const biologicalSexIsAutoPopulated = prefillData?.demographics.biologicalSex.confidence !== 'none'
     && !!prefillData?.demographics.biologicalSex.value;
-  const fullNameIsAutoPopulated = demoNamePrefilled && !!demoName.trim();
-
   // ── Load clinical records ─────────────────────────────────────────
 
   const loadPrefillData = useCallback(async () => {
     setPhase('loading');
 
     try {
-      let clinicalRecords = null;
-      let demographics = { age: null, dateOfBirth: null, biologicalSex: null };
-
-      const [healthKitDemographics, onboardingData] = await Promise.all([
+      const [rawRecords, demographics] = await Promise.all([
+        getAllClinicalRecords().catch((err) => {
+          console.warn('[MedicalHistory] getAllClinicalRecords error:', err);
+          return { medications: [], labResults: [], conditions: [], procedures: [] };
+        }),
         getDemographics().catch(() => ({ age: null, dateOfBirth: null, biologicalSex: null })),
-        OnboardingService.getData(),
       ]);
 
-      demographics = healthKitDemographics;
-
-      const providerId = onboardingData.providerConnection?.providerId;
-      setProviderConnection(onboardingData.providerConnection ?? null);
-      if (providerId) {
-        try {
-          const providerSync = await syncSmartClinicalData(providerId);
-          clinicalRecords = clinicalRecords
-            ? mergeClinicalInputs(clinicalRecords, providerSync.clinicalRecords)
-            : providerSync.clinicalRecords;
-          demographics = mergeDemographics(demographics, providerSync.demographics);
-        } catch (error) {
-          console.warn('[MedicalHistory] SMART sync skipped:', error);
-        }
-      }
+      // Map HK ClinicalRecord[] → ClinicalRecordsInput (parser's expected shape)
+      const clinicalRecords = {
+        medications: rawRecords.medications.map((r) => ({
+          displayName: r.displayName,
+          fhirResource: r.fhirResource,
+        })),
+        labResults: rawRecords.labResults.map((r) => ({
+          displayName: r.displayName,
+          fhirResource: r.fhirResource,
+        })),
+        conditions: rawRecords.conditions.map((r) => ({
+          displayName: r.displayName,
+          fhirResource: r.fhirResource,
+        })),
+        procedures: rawRecords.procedures.map((r) => ({
+          displayName: r.displayName,
+          fhirResource: r.fhirResource,
+        })),
+      };
 
       const prefill = buildMedicalHistoryPrefill(clinicalRecords, demographics);
 
@@ -565,7 +497,7 @@ export default function MedicalHistoryScreen() {
       );
 
       // Build flat editable lists from the prefill, including non-BPH meds
-      // pulled from SMART/HealthKit so the participant can confirm them too.
+      // pulled from Apple Health clinical records so the participant can confirm them too.
       const medGroupKeys = [
         'alphaBlockers',
         'fiveARIs',
@@ -615,68 +547,6 @@ export default function MedicalHistoryScreen() {
       setEditingCondId(null);
       setEditingCondValue('');
 
-      setEditableLabs([
-        {
-          id: 'lab_psa',
-          label: 'PSA',
-          description: 'Prostate-Specific Antigen',
-          value: prefill.labs.psa.value?.value != null ? String(prefill.labs.psa.value.value) : '',
-          unit: prefill.labs.psa.value?.unit,
-          date: prefill.labs.psa.value?.date,
-          referenceRange: prefill.labs.psa.value?.referenceRange,
-        },
-        {
-          id: 'lab_hba1c',
-          label: 'HbA1c',
-          description: 'Hemoglobin A1c (blood sugar)',
-          value: prefill.labs.hba1c.value?.value != null ? String(prefill.labs.hba1c.value.value) : '',
-          unit: prefill.labs.hba1c.value?.unit,
-          date: prefill.labs.hba1c.value?.date,
-          referenceRange: prefill.labs.hba1c.value?.referenceRange,
-        },
-        {
-          id: 'lab_urinalysis',
-          label: 'Urinalysis',
-          description: 'Urine test panel',
-          value: prefill.labs.urinalysis.value?.value != null ? String(prefill.labs.urinalysis.value.value) : '',
-          unit: prefill.labs.urinalysis.value?.unit,
-          date: prefill.labs.urinalysis.value?.date,
-          referenceRange: prefill.labs.urinalysis.value?.referenceRange,
-        },
-      ]);
-
-      setEditableMeasurements([
-        {
-          id: 'measurement_pvr',
-          label: 'PVR',
-          description: 'Post-Void Residual volume',
-          value: prefill.clinicalMeasurements.pvr.value?.value != null ? String(prefill.clinicalMeasurements.pvr.value.value) : '',
-          unit: prefill.clinicalMeasurements.pvr.value?.unit,
-          date: prefill.clinicalMeasurements.pvr.value?.date,
-          referenceRange: prefill.clinicalMeasurements.pvr.value?.referenceRange,
-        },
-        {
-          id: 'measurement_uroflowQmax',
-          label: 'Uroflow Qmax',
-          description: 'Maximum urinary flow rate',
-          value: prefill.clinicalMeasurements.uroflowQmax.value?.value != null ? String(prefill.clinicalMeasurements.uroflowQmax.value.value) : '',
-          unit: prefill.clinicalMeasurements.uroflowQmax.value?.unit,
-          date: prefill.clinicalMeasurements.uroflowQmax.value?.date,
-          referenceRange: prefill.clinicalMeasurements.uroflowQmax.value?.referenceRange,
-        },
-        {
-          id: 'measurement_volumeVoided',
-          label: 'Volume Voided',
-          description: 'Urine volume per void (mL)',
-          value: prefill.clinicalMeasurements.volumeVoided.value?.value != null ? String(prefill.clinicalMeasurements.volumeVoided.value.value) : '',
-          unit: prefill.clinicalMeasurements.volumeVoided.value?.unit,
-          date: prefill.clinicalMeasurements.volumeVoided.value?.date,
-          referenceRange: prefill.clinicalMeasurements.volumeVoided.value?.referenceRange,
-        },
-      ]);
-      setEditingValueId(null);
-      setEditingValueText('');
-
       setReviewStep(0);
       setConfirmedDemoFields(new Set());
       setConfirmedMedIds(new Set());
@@ -685,30 +555,20 @@ export default function MedicalHistoryScreen() {
       setRejectedProcIds(new Set());
       setConfirmedCondIds(new Set());
       setRejectedCondIds(new Set());
-      setConfirmedLabIds(new Set());
-      setRejectedLabIds(new Set());
-      setConfirmedMeasurementIds(new Set());
-      setRejectedMeasurementIds(new Set());
       setDemoPhone('');
       setDemoAge('');
       setDemoBiologicalSex('');
       setDemoEthnicity('');
       setDemoRace('');
-      setDemoNamePrefilled(false);
-      setDemoEditingField(null);
 
-      // Pre-fill name from consent signature — must happen after all resets
-      // so it isn't overwritten. The consent record is in-memory so this is fast.
       const consentRecord = await ConsentService.getConsentRecord();
       const consentName = consentRecord?.participantSignature;
       if (consentName && consentName !== '[Drawn signature provided]') {
         setDemoName(consentName);
-        setDemoNamePrefilled(true);
         setDemoStage('ethnicity');
       } else {
         setDemoName('');
-        setDemoNamePrefilled(false);
-        setDemoStage('name');
+        setDemoStage('ethnicity');
       }
 
       setPhase('reviewing');
@@ -815,21 +675,6 @@ export default function MedicalHistoryScreen() {
   const buildConfirmedMedicalHistoryPayload = useCallback(() => {
     if (!prefillData) return null;
 
-    const labById = Object.fromEntries(editableLabs.map(item => [item.id, item]));
-    const measurementById = Object.fromEntries(editableMeasurements.map(item => [item.id, item]));
-
-    const parseValueEntry = (item: EditableValueItem | undefined) => {
-      if (!item || !item.value.trim()) return null;
-      const parsed = Number(item.value);
-      if (Number.isNaN(parsed)) return null;
-      return {
-        value: parsed,
-        unit: item.unit ?? '',
-        date: item.date ?? '',
-        referenceRange: item.referenceRange,
-      };
-    };
-
     const rawAge = (ageIsAutoPopulated ? confirmedDemoFields.has('age') : !!demoAge.trim())
       ? (prefillData.demographics.age.value ?? (demoAge ? parseInt(demoAge, 10) : null))
       : null;
@@ -846,11 +691,6 @@ export default function MedicalHistoryScreen() {
       const year = new Date(dateStr).getFullYear();
       return Number.isNaN(year) ? undefined : String(year);
     };
-    const deidentifyLab = (entry: ReturnType<typeof parseValueEntry>) => {
-      if (!entry) return null;
-      return { ...entry, date: yearOnly(entry.date) ?? entry.date };
-    };
-
     return {
       demographics: {
         ethnicity: demoEthnicity,
@@ -877,33 +717,25 @@ export default function MedicalHistoryScreen() {
         })),
       conditions: buildConfirmedConditions().map(name => ({ name })),
       labs: {
-        psa: confirmedLabIds.has('lab_psa') ? deidentifyLab(parseValueEntry(labById.lab_psa)) : null,
-        hba1c: confirmedLabIds.has('lab_hba1c') ? deidentifyLab(parseValueEntry(labById.lab_hba1c)) : null,
-        urinalysis: confirmedLabIds.has('lab_urinalysis') ? deidentifyLab(parseValueEntry(labById.lab_urinalysis)) : null,
+        psa: null,
+        hba1c: null,
+        urinalysis: null,
       },
       clinicalMeasurements: {
-        pvr: confirmedMeasurementIds.has('measurement_pvr') ? deidentifyLab(parseValueEntry(measurementById.measurement_pvr)) : null,
-        uroflowQmax: confirmedMeasurementIds.has('measurement_uroflowQmax') ? deidentifyLab(parseValueEntry(measurementById.measurement_uroflowQmax)) : null,
-        volumeVoided: confirmedMeasurementIds.has('measurement_volumeVoided') ? deidentifyLab(parseValueEntry(measurementById.measurement_volumeVoided)) : null,
+        pvr: null,
+        uroflowQmax: null,
+        volumeVoided: null,
         mobility: prefillData.clinicalMeasurements.mobility.value ?? null,
       },
     };
   }, [
     prefillData,
-    editableLabs,
-    editableMeasurements,
     editableMeds,
     otherMeds,
     editableProcs,
     confirmedDemoFields,
     confirmedMedIds,
-    rejectedMedIds,
     confirmedProcIds,
-    rejectedProcIds,
-    confirmedLabIds,
-    rejectedLabIds,
-    confirmedMeasurementIds,
-    rejectedMeasurementIds,
     demoAge,
     demoBiologicalSex,
     demoEthnicity,
@@ -921,7 +753,7 @@ export default function MedicalHistoryScreen() {
     const normalizedName = demoName.trim();
     const normalizedPhone = demoPhone.trim();
     const normalizedEmail = authUser.email?.trim() || '';
-    const includeFullName = fullNameIsAutoPopulated ? confirmedDemoFields.has('fullName') : !!normalizedName;
+    const includeFullName = !!normalizedName;
     const includePhone = !!normalizedPhone;
     const includeAge = ageIsAutoPopulated ? confirmedDemoFields.has('age') : !!demoAge.trim();
     const includeBiologicalSex = biologicalSexIsAutoPopulated
@@ -944,7 +776,7 @@ export default function MedicalHistoryScreen() {
     });
 
     const demographicFieldsReady =
-      includeFullName && includeAge && includeBiologicalSex && includeEthnicity && includeRace;
+      includeAge && includeBiologicalSex && includeEthnicity && includeRace;
 
     if (demographicFieldsReady) {
       const rawAge = prefillData.demographics.age.value ?? (demoAge ? parseInt(demoAge, 10) : null);
@@ -976,7 +808,6 @@ export default function MedicalHistoryScreen() {
     demoBiologicalSex,
     demoEthnicity,
     demoRace,
-    fullNameIsAutoPopulated,
     ageIsAutoPopulated,
     biologicalSexIsAutoPopulated,
     confirmedDemoFields,
@@ -1004,7 +835,6 @@ export default function MedicalHistoryScreen() {
     ];
 
     const demoSummary = [
-      fullNameReady && demoName && `Name: ${demoName}`,
       phoneReady && demoPhone && `Phone: ${demoPhone}`,
       ageReady && (prefillData.demographics.age.value ?? demoAge) && `Age: ${prefillData.demographics.age.value ?? demoAge}`,
       biologicalSexReady && (prefillData.demographics.biologicalSex.value ?? demoBiologicalSex) && `Sex: ${prefillData.demographics.biologicalSex.value ?? demoBiologicalSex}`,
@@ -1052,8 +882,8 @@ export default function MedicalHistoryScreen() {
       toValue: 0,
       duration: 120,
       useNativeDriver: true,
-    }).start(() => {
-      if (reviewStep < 5) {
+      }).start(() => {
+      if (reviewStep < STEP_TITLES.length - 1) {
         setReviewStep(prev => prev + 1);
       } else {
         setPhase('complete');
@@ -1077,24 +907,17 @@ export default function MedicalHistoryScreen() {
   const biologicalSexReady = biologicalSexIsAutoPopulated
     ? confirmedDemoFields.has('biologicalSex')
     : !!demoBiologicalSex.trim();
-  const fullNameReady = fullNameIsAutoPopulated
-    ? confirmedDemoFields.has('fullName')
-    : !!demoName.trim();
   const phoneReady = !!demoPhone.trim();
   const ethnicityReady = !!demoEthnicity.trim();
   const raceReady = !!demoRace.trim();
 
   const stepCanProceed = reviewStep === 0
-    ? ageReady && biologicalSexReady && fullNameReady && phoneReady && ethnicityReady && raceReady
+    ? ageReady && biologicalSexReady && phoneReady && ethnicityReady && raceReady
     : reviewStep === 1
     ? [...editableMeds, ...otherMeds].every(item => confirmedMedIds.has(item.id) || rejectedMedIds.has(item.id))
     : reviewStep === 2
     ? editableProcs.every(item => confirmedProcIds.has(item.id) || rejectedProcIds.has(item.id))
-    : reviewStep === 3
-    ? editableLabs.filter(item => item.value.trim()).every(item => confirmedLabIds.has(item.id) || rejectedLabIds.has(item.id))
-    : reviewStep === 4
-    ? [...editableHealthConds, ...otherConds].every(item => confirmedCondIds.has(item.id) || rejectedCondIds.has(item.id))
-    : editableMeasurements.filter(item => item.value.trim()).every(item => confirmedMeasurementIds.has(item.id) || rejectedMeasurementIds.has(item.id));
+    : [...editableHealthConds, ...otherConds].every(item => confirmedCondIds.has(item.id) || rejectedCondIds.has(item.id));
 
   // ── Shared style values ───────────────────────────────────────────
 
@@ -1102,6 +925,7 @@ export default function MedicalHistoryScreen() {
   const borderColor = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)';
 
   function ProcedureSection({ label, items }: { label: string; items: EditableProcItem[] }) {
+    const isBPHSection = label.includes('BPH');
     return (
       <View style={reviewStyles.medGroup}>
         <Text style={[reviewStyles.medGroupLabel, { color: colors.icon }]}>{label}</Text>
@@ -1109,14 +933,19 @@ export default function MedicalHistoryScreen() {
           items.map(item => (
             <View key={item.id} style={reviewStyles.medItem}>
               <Text style={[reviewStyles.medBullet, { color: StanfordColors.cardinal }]}>•</Text>
-              {editingProcId === item.id ? (
-                <TextInput
-                  value={editingProcValue}
-                  onChangeText={setEditingProcValue}
-                  onSubmitEditing={() => {
-                    setEditableProcs(prev => prev.map(p =>
-                      p.id === item.id ? { ...p, name: editingProcValue.trim() || p.name } : p
-                    ));
+                      {editingProcId === item.id ? (
+                        <TextInput
+                          value={editingProcValue}
+                          onChangeText={setEditingProcValue}
+                          onSubmitEditing={() => {
+                    const trimmed = editingProcValue.trim();
+                    if (trimmed) {
+                      setEditableProcs(prev => prev.map(p =>
+                        p.id === item.id ? { ...p, name: trimmed } : p
+                      ));
+                    } else {
+                      setEditableProcs(prev => prev.filter(p => p.id !== item.id));
+                    }
                     setEditingProcId(null);
                   }}
                   returnKeyType="done"
@@ -1170,6 +999,29 @@ export default function MedicalHistoryScreen() {
             None found in health records
           </Text>
         )}
+        <TouchableOpacity
+          style={reviewStyles.addMedButton}
+          onPress={() => {
+            const prefix = isBPHSection ? 'bph_custom' : 'other_proc_custom';
+            const newId = `${prefix}_${Date.now()}`;
+            setEditableProcs(prev => [...prev, {
+              id: newId,
+              name: '',
+              commonName: undefined,
+              date: undefined,
+              isBPH: isBPHSection,
+            }]);
+            setEditingProcId(newId);
+            setEditingProcValue('');
+            setEditingMedId(null);
+            setEditingCondId(null);
+          }}
+          activeOpacity={0.7}
+        >
+          <Text style={[reviewStyles.addMedButtonText, { color: StanfordColors.cardinal }]}>
+            {isBPHSection ? '+ Add BPH Surgery' : '+ Add Surgery'}
+          </Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -1177,126 +1029,10 @@ export default function MedicalHistoryScreen() {
   function renderStepContent() {
     if (!prefillData) return null;
 
-    const renderEditableValueRow = (
-      item: EditableValueItem,
-      confirmedSet: Set<string>,
-      setConfirmed: React.Dispatch<React.SetStateAction<Set<string>>>,
-    ) => {
-      const isEditing = editingValueId === item.id;
-      const meta = [
-        item.date ? formatShortDate(item.date) : null,
-        item.referenceRange ? `Ref: ${item.referenceRange}` : null,
-      ].filter(Boolean).join(' · ');
-      const displayValue = item.value.trim()
-        ? (item.unit ? `${item.value} ${item.unit}` : item.value)
-        : null;
-
-      return (
-        <View key={item.id} style={[reviewStyles.labRow, { borderBottomColor: borderColor }]}>
-          <View style={reviewStyles.labLeft}>
-            <Text style={[reviewStyles.labName, { color: colors.text }]}>{item.label}</Text>
-            <Text style={[reviewStyles.labDescription, { color: colors.icon }]}>{item.description}</Text>
-          </View>
-          <View style={reviewStyles.labRight}>
-            {isEditing ? (
-              <TextInput
-                value={editingValueText}
-                onChangeText={setEditingValueText}
-                onSubmitEditing={() => {
-                  setEditingValueId(null);
-                  const trimmed = editingValueText.trim();
-                  const updateValue = (prev: EditableValueItem[]) => prev.map(entry =>
-                    entry.id === item.id ? { ...entry, value: trimmed } : entry
-                  );
-                  if (item.id.startsWith('lab_')) {
-                    setEditableLabs(updateValue);
-                  } else {
-                    setEditableMeasurements(updateValue);
-                  }
-                }}
-                returnKeyType="done"
-                keyboardType="decimal-pad"
-                autoFocus
-                placeholder="Enter value"
-                placeholderTextColor={colors.icon}
-                style={[reviewStyles.labValueInput, { color: colors.text }]}
-              />
-            ) : displayValue ? (
-              <>
-                <Text style={[reviewStyles.labValue, { color: colors.text }]}>{displayValue}</Text>
-                {meta ? (
-                  <Text style={[reviewStyles.labMeta, { color: colors.icon }]}>{meta}</Text>
-                ) : null}
-              </>
-            ) : (
-              <Text style={[reviewStyles.willAskText, { color: colors.icon }]}>Not found</Text>
-            )}
-            {!isEditing ? (
-              <RowActionIcons
-                checked={confirmedSet.has(item.id)}
-                rejected={(item.id.startsWith('lab_') ? rejectedLabIds : rejectedMeasurementIds).has(item.id)}
-                onEdit={() => {
-                  setEditingValueId(item.id);
-                  setEditingValueText(item.value);
-                }}
-                onConfirm={() => setResolutionState(
-                  item.id,
-                  setConfirmed,
-                  item.id.startsWith('lab_') ? setRejectedLabIds : setRejectedMeasurementIds,
-                  'confirmed',
-                )}
-                onReject={() => setResolutionState(
-                  item.id,
-                  setConfirmed,
-                  item.id.startsWith('lab_') ? setRejectedLabIds : setRejectedMeasurementIds,
-                  'rejected',
-                )}
-              />
-            ) : null}
-          </View>
-        </View>
-      );
-    };
-
     switch (reviewStep) {
       case 0:
         return (
           <>
-            <View style={[reviewStyles.card, { backgroundColor: sectionBg, marginBottom: 12 }]}>
-              <Text style={[reviewStyles.cardSectionTitle, { color: colors.icon }]}>
-                HEALTH RECORDS
-              </Text>
-              <View style={reviewStyles.epicCardBody}>
-                <Text style={[reviewStyles.epicCardText, { color: colors.icon }]}>
-                  Import additional clinical notes and records from a SMART-connected provider.
-                  Epic Sandbox remains available here for testing.
-                </Text>
-                <TouchableOpacity
-                  style={[
-                    reviewStyles.epicButton,
-                    providerConnection
-                      ? reviewStyles.epicButtonConnected
-                      : reviewStyles.epicButtonPrimary,
-                  ]}
-                  activeOpacity={0.7}
-                  onPress={() => router.push('/smart-connect' as Href)}
-                >
-                  <Text
-                    style={[
-                      reviewStyles.epicButtonText,
-                      providerConnection
-                        ? reviewStyles.epicButtonTextConnected
-                        : reviewStyles.epicButtonTextPrimary,
-                    ]}
-                  >
-                    {providerConnection
-                      ? `${providerConnection.providerName} Connected`
-                      : 'Connect Health Records'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
             <View style={[reviewStyles.card, { backgroundColor: sectionBg }]}>
               {/* Age — static if from Apple Health, editable input otherwise */}
               {prefillData.demographics.age.confidence !== 'none' && prefillData.demographics.age.value != null ? (
@@ -1364,48 +1100,6 @@ export default function MedicalHistoryScreen() {
                 <SelectDataRow
                   label="Biological Sex"
                   onPress={() => openPicker('biologicalSex')}
-                  colors={colors}
-                  borderColor={borderColor}
-                />
-              )}
-
-              {/* Full Name — inline input on initial entry or when re-editing */}
-              {(demoStage === 'name' || demoEditingField === 'name') ? (
-                <InlineInputRow
-                  label="Full Name"
-                  value={demoName}
-                  onChange={setDemoName}
-                  onSubmit={() => {
-                    if (demoStage === 'name') {
-                      setDemoStage('ethnicity');
-                    } else {
-                      setDemoEditingField(null);
-                    }
-                  }}
-                  actions={fullNameIsAutoPopulated ? (
-                    <RowActionIcons
-                      checked={confirmedDemoFields.has('fullName')}
-                      showEdit={false}
-                      onConfirm={() => updateConfirmedSet(setConfirmedDemoFields, 'fullName')}
-                    />
-                  ) : undefined}
-                  colors={colors}
-                  borderColor={borderColor}
-                />
-              ) : (
-                <DataRow
-                  label="Full Name"
-                  value={demoName || '—'}
-                  found
-                  showBadge={false}
-                  actions={(
-                    <RowActionIcons
-                      onEdit={() => setDemoEditingField('name')}
-                      {...(fullNameIsAutoPopulated
-                        ? { checked: confirmedDemoFields.has('fullName'), onConfirm: () => updateConfirmedSet(setConfirmedDemoFields, 'fullName') }
-                        : { checked: false })}
-                    />
-                  )}
                   colors={colors}
                   borderColor={borderColor}
                 />
@@ -1653,17 +1347,6 @@ export default function MedicalHistoryScreen() {
 
       case 3: {
         return (
-          <View style={[reviewStyles.card, { backgroundColor: sectionBg }]}>
-            <Text style={[reviewStyles.cardSectionTitle, { color: colors.icon }]}>
-              LAB RESULTS FROM HEALTH RECORDS
-            </Text>
-            {editableLabs.map(item => renderEditableValueRow(item, confirmedLabIds, setConfirmedLabIds))}
-          </View>
-        );
-      }
-
-      case 4: {
-        return (
           <>
             {/* Health-record conditions */}
             <View style={[reviewStyles.card, { backgroundColor: sectionBg }]}>
@@ -1817,17 +1500,6 @@ export default function MedicalHistoryScreen() {
         );
       }
 
-      case 5: {
-        return (
-          <View style={[reviewStyles.card, { backgroundColor: sectionBg }]}>
-            <Text style={[reviewStyles.cardSectionTitle, { color: colors.icon }]}>
-              CLINICAL MEASUREMENTS FROM HEALTH RECORDS
-            </Text>
-            {editableMeasurements.map(item => renderEditableValueRow(item, confirmedMeasurementIds, setConfirmedMeasurementIds))}
-          </View>
-        );
-      }
-
       default:
         return null;
     }
@@ -1857,7 +1529,7 @@ export default function MedicalHistoryScreen() {
   // ── Reviewing phase ───────────────────────────────────────────────
 
   if (phase === 'reviewing' || phase === 'complete') {
-    const isLastStep = reviewStep === 5;
+    const isLastStep = reviewStep === STEP_TITLES.length - 1;
 
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
@@ -1870,7 +1542,7 @@ export default function MedicalHistoryScreen() {
           <>
             <View style={reviewStyles.stepHeader}>
               <View style={reviewStyles.stepDots}>
-                {[0, 1, 2, 3, 4, 5].map(i => (
+                {STEP_TITLES.map((_, i) => (
                   <View
                     key={i}
                     style={[
@@ -1885,14 +1557,29 @@ export default function MedicalHistoryScreen() {
                 ))}
               </View>
               <Text style={[reviewStyles.stepCounter, { color: colors.icon }]}>
-                Step {reviewStep + 1} of 6
+                Step {reviewStep + 1} of {STEP_TITLES.length}
               </Text>
             </View>
 
             <View style={reviewStyles.titleRow}>
-              <Text style={[reviewStyles.stepTitle, { color: colors.text }]}>
-                {STEP_TITLES[reviewStep]}
-              </Text>
+              <View style={reviewStyles.titleRowHeader}>
+                <Text style={[reviewStyles.stepTitle, { color: colors.text }]}>
+                  {STEP_TITLES[reviewStep]}
+                </Text>
+                <TouchableOpacity
+                  onPress={loadPrefillData}
+                  style={reviewStyles.refreshButton}
+                  accessibilityRole="button"
+                  accessibilityLabel="Refresh from Apple Health"
+                >
+                  <IconSymbol
+                    name={"arrow.clockwise" as any}
+                    size={16}
+                    color={StanfordColors.cardinal}
+                  />
+                  <Text style={reviewStyles.refreshButtonText}>Refresh</Text>
+                </TouchableOpacity>
+              </View>
               <Text style={[reviewStyles.stepDesc, { color: colors.icon }]}>
                 {STEP_DESCRIPTIONS[reviewStep]}
               </Text>
@@ -2022,14 +1709,35 @@ const reviewStyles = StyleSheet.create({
     paddingBottom: Spacing.sm,
     gap: 4,
   },
+  titleRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
   stepTitle: {
     fontSize: 22,
     fontWeight: '700',
     letterSpacing: -0.3,
+    flexShrink: 1,
   },
   stepDesc: {
     fontSize: 14,
     lineHeight: 20,
+  },
+  refreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(140, 21, 21, 0.08)',
+  },
+  refreshButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: StanfordColors.cardinal,
   },
   scrollContent: {
     paddingHorizontal: Spacing.screenHorizontal,

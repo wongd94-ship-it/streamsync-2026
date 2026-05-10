@@ -27,6 +27,7 @@ import { Colors, StanfordColors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/hooks/use-auth';
 import { devSkipAuth } from '@/lib/dev-flags';
 import { notifyOnboardingComplete } from '@/hooks/use-onboarding-status';
+import { OnboardingService } from '@/lib/services/onboarding-service';
 
 const LANGUAGES = [
   { code: 'en', name: 'English',    flag: '🇺🇸' },
@@ -227,7 +228,23 @@ export default function LoginScreen() {
             <Text style={[styles.footerText, { color: colors.icon }]}>
               Don&apos;t have an account?{' '}
             </Text>
-            <TouchableOpacity onPress={() => router.replace('/(auth)/signup' as Href)}>
+            <TouchableOpacity
+              onPress={async () => {
+                // Clear the pre-auth onboarding scratchpad (step, collected
+                // eligibility/consent/medical data, permissions cache) so a
+                // new account starts onboarding from step 1 rather than
+                // resuming wherever the previous user left off on this
+                // device. Per-uid completion flags (and the global
+                // "has-ever-onboarded" flag) are preserved.
+                await OnboardingService.resetPreAuthScratchpad().catch(() => {});
+                // Navigate to the welcome leaf screen directly (not the
+                // (onboarding)/index router). The index has a guard that
+                // bounces unauth-returning-users to /(auth)/login — which
+                // is the right default behavior on app launch but wrong
+                // here because the user explicitly asked to sign up.
+                router.replace('/(onboarding)/welcome' as Href);
+              }}
+            >
               <Text style={[styles.linkText, { color: StanfordColors.cardinal }]}>Sign Up</Text>
             </TouchableOpacity>
           </View>

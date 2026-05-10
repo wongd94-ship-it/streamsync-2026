@@ -1,4 +1,4 @@
-package com.chehan.homeflow
+package com.dwong.homeflow
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build

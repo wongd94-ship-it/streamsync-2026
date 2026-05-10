@@ -1,4 +1,4 @@
-package com.chehan.homeflow
+package com.dwong.homeflow
 
 import android.app.Application
 import android.content.res.Configuration

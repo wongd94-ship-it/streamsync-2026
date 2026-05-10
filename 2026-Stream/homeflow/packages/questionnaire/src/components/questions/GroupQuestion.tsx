@@ -11,13 +11,21 @@ interface GroupQuestionProps {
   theme: QuestionnaireTheme;
   questionnaire: any; // Will be typed properly in QuestionnaireForm
   questionnaireResponse: QuestionnaireResponse;
+  onChoiceAnswered?: (linkId: string, value: unknown) => void;
 }
 
 /**
  * Renders a group question (container for nested questions)
  * Recursively renders child items
  */
-export function GroupQuestion({ item, formik, theme, questionnaire, questionnaireResponse }: GroupQuestionProps) {
+export function GroupQuestion({
+  item,
+  formik,
+  theme,
+  questionnaire,
+  questionnaireResponse,
+  onChoiceAnswered,
+}: GroupQuestionProps) {
   if (!item.item || item.item.length === 0) {
     return null;
   }
@@ -61,6 +69,7 @@ export function GroupQuestion({ item, formik, theme, questionnaire, questionnair
             theme={theme}
             questionnaire={questionnaire}
             questionnaireResponse={questionnaireResponse}
+            onChoiceAnswered={onChoiceAnswered}
           />
         ))}
       </View>

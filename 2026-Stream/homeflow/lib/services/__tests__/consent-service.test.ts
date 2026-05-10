@@ -210,6 +210,7 @@ describe('ConsentService', () => {
         STORAGE_KEYS.CONSENT_GIVEN,
         STORAGE_KEYS.CONSENT_DATE,
         STORAGE_KEYS.CONSENT_VERSION,
+        STORAGE_KEYS.CONSENT_SIGNATURE,
       ]);
     });
 

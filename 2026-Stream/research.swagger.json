@@ -10,11 +10,6 @@
       "key": "bladder",
       "label": "Streamsync bladder outlet",
       "studyId": "dr-wong-biodesign-urinary-flow-rate-1"
-    },
-    {
-      "key": "uds",
-      "label": "Streamsync UDS",
-      "studyId": "streamsync-uds"
     }
   ],
   "tags": [
@@ -142,7 +137,7 @@
       "properties": {
         "studyId": {
           "type": "string",
-          "description": "Research study identifier. Supported Streamsync values include dr-wong-biodesign-urinary-flow-rate-1 and streamsync-uds."
+          "description": "Research study identifier. The only Streamsync-approved value is dr-wong-biodesign-urinary-flow-rate-1 (IRB/Throne research-export access)."
         },
         "gtTs": {
           "type": "string",
@@ -251,7 +246,7 @@
       "properties": {
         "studyId": {
           "type": "string",
-          "description": "Research study identifier. Supported Streamsync values include dr-wong-biodesign-urinary-flow-rate-1 and streamsync-uds."
+          "description": "Research study identifier. The only Streamsync-approved value is dr-wong-biodesign-urinary-flow-rate-1 (IRB/Throne research-export access)."
         }
       },
       "title": "StudyMetadata RPCs"

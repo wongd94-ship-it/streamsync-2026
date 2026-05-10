@@ -101,48 +101,82 @@ describe('OnboardingService', () => {
   });
 
   /**
-   * Tests for isComplete()
+   * Tests for isComplete(uid)
    *
-   * Checks if the user has finished all onboarding steps.
-   * Used by auth guards to allow access to the main app.
+   * Checks if the user has finished all onboarding steps. The flag is
+   * keyed per-uid so that multiple accounts on the same device don't
+   * share completion state.
    */
   describe('isComplete', () => {
+    const UID_A = 'user-a-uid';
+    const UID_B = 'user-b-uid';
+
     /**
-     * Verifies false when onboarding hasn't started.
+     * With no uid provided, there is no completion state to report —
+     * return false. Used by launch routing before auth hydrates.
      */
-    it('should return false when onboarding has not started', async () => {
+    it('should return false when no uid is provided', async () => {
       const service = createOnboardingService();
-      const result = await service.isComplete();
+      const result = await service.isComplete(null);
       expect(result).toBe(false);
     });
 
     /**
-     * Verifies false when on an intermediate step (not COMPLETE).
+     * Verifies false when uid has never completed onboarding.
      */
-    it('should return false when on an intermediate step', async () => {
+    it("should return false when the uid's finished flag is not set", async () => {
+      const service = createOnboardingService();
+      const result = await service.isComplete(UID_A);
+      expect(result).toBe(false);
+    });
+
+    /**
+     * Verifies true when the per-uid finished flag is set.
+     */
+    it('should return true when the per-uid finished flag is true', async () => {
       (AsyncStorage.getItem as jest.Mock).mockImplementation((key: string) => {
-        if (key === STORAGE_KEYS.ONBOARDING_STEP) return Promise.resolve(OnboardingStep.CONSENT);
+        if (key === `@homeflow_onboarding_finished:${UID_A}`) return Promise.resolve('true');
         return Promise.resolve(null);
       });
 
       const service = createOnboardingService();
-      const result = await service.isComplete();
-      expect(result).toBe(false);
+      const result = await service.isComplete(UID_A);
+      expect(result).toBe(true);
     });
 
     /**
-     * Verifies true when the current step is COMPLETE.
+     * Cross-account isolation: user A completing does not bleed into user B.
      */
-    it('should return true when step is COMPLETE', async () => {
+    it("should not leak user A's completion into user B", async () => {
       (AsyncStorage.getItem as jest.Mock).mockImplementation((key: string) => {
-        if (key === STORAGE_KEYS.ONBOARDING_STEP) return Promise.resolve(OnboardingStep.COMPLETE);
+        if (key === `@homeflow_onboarding_finished:${UID_A}`) return Promise.resolve('true');
+        return Promise.resolve(null);
+      });
+
+      const service = createOnboardingService();
+      expect(await service.isComplete(UID_A)).toBe(true);
+      expect(await service.isComplete(UID_B)).toBe(false);
+    });
+
+    /**
+     * One-time legacy migration: if the global @homeflow_onboarding_finished
+     * flag is 'true' and we now know the uid, promote it to the per-uid key
+     * and delete the legacy one.
+     */
+    it('should migrate legacy global finished flag to the per-uid key', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation((key: string) => {
         if (key === STORAGE_KEYS.ONBOARDING_FINISHED) return Promise.resolve('true');
         return Promise.resolve(null);
       });
 
       const service = createOnboardingService();
-      const result = await service.isComplete();
-      expect(result).toBe(true);
+      await service.isComplete(UID_A);
+
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+        `@homeflow_onboarding_finished:${UID_A}`,
+        'true',
+      );
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(STORAGE_KEYS.ONBOARDING_FINISHED);
     });
   });
 
@@ -313,12 +347,17 @@ describe('OnboardingService', () => {
           hasIPhone: true,
           hasBPHDiagnosis: true,
           consideringSurgery: true,
+          hasPlannedUrodynamicStudy: false,
           isEligible: true,
+          anchorDateType: 'surgery',
+          surgeryDate: '2026-04-30',
         },
       });
 
       const data = await service.getData();
       expect(data.eligibility?.hasIPhone).toBe(true);
+      expect(data.eligibility?.anchorDateType).toBe('surgery');
+      expect(data.eligibility?.surgeryDate).toBe('2026-04-30');
     });
 
     /**
@@ -417,18 +456,21 @@ describe('OnboardingService', () => {
   });
 
   /**
-   * Tests for complete()
+   * Tests for complete(uid)
    *
-   * Marks onboarding as finished by setting step to COMPLETE.
+   * Marks onboarding as finished for a specific user. The finished flag is
+   * stored under a per-uid key to prevent cross-account contamination.
    */
   describe('complete', () => {
+    const UID_A = 'user-a-uid';
+
     /**
      * Verifies that complete() sets the step to COMPLETE.
      */
     it('should set step to COMPLETE', async () => {
       const service = createOnboardingService();
       await service.start();
-      await service.complete();
+      await service.complete(UID_A);
 
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         STORAGE_KEYS.ONBOARDING_STEP,
@@ -437,33 +479,64 @@ describe('OnboardingService', () => {
     });
 
     /**
-     * Verifies isComplete() returns true after calling complete().
+     * Verifies the per-uid finished flag is written.
      */
-    it('should report isComplete as true after completion', async () => {
+    it('should write the per-uid finished flag', async () => {
       const service = createOnboardingService();
       await service.start();
-      await service.complete();
+      await service.complete(UID_A);
 
-      const isComplete = await service.isComplete();
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+        `@homeflow_onboarding_finished:${UID_A}`,
+        'true',
+      );
+    });
+
+    /**
+     * Verifies isComplete(uid) returns true after calling complete(uid).
+     */
+    it('should report isComplete(uid) as true after completion', async () => {
+      const service = createOnboardingService();
+      await service.start();
+
+      // Simulate what AsyncStorage will now report: the per-uid key is set.
+      (AsyncStorage.getItem as jest.Mock).mockImplementation((key: string) => {
+        if (key === `@homeflow_onboarding_finished:${UID_A}`) return Promise.resolve('true');
+        return Promise.resolve(null);
+      });
+
+      await service.complete(UID_A);
+
+      const isComplete = await service.isComplete(UID_A);
       expect(isComplete).toBe(true);
+    });
+
+    /**
+     * Guards against callers that accidentally drop the uid.
+     */
+    it('should throw when called without a uid', async () => {
+      const service = createOnboardingService();
+      await expect(service.complete('')).rejects.toThrow(/Firebase uid/i);
     });
   });
 
   /**
-   * Tests for reset()
+   * Tests for reset(uid?)
    *
-   * Clears all onboarding state for re-enrollment or testing.
-   * Removes step, data, and related keys (consent, permissions, etc.).
+   * Clears shared onboarding state. When a uid is passed, also clears that
+   * user's per-uid finished flag.
    */
   describe('reset', () => {
+    const UID_A = 'user-a-uid';
+
     /**
-     * Verifies that reset() removes all onboarding-related keys
-     * from AsyncStorage in a single multiRemove call.
+     * Verifies that reset(uid) removes all shared keys AND the per-uid
+     * finished flag in a single multiRemove call.
      */
-    it('should remove all onboarding-related keys from storage', async () => {
+    it('should remove all onboarding-related keys including the per-uid flag', async () => {
       const service = createOnboardingService();
       await service.start();
-      await service.reset();
+      await service.reset(UID_A);
 
       expect(AsyncStorage.multiRemove).toHaveBeenCalledWith([
         STORAGE_KEYS.ONBOARDING_STEP,
@@ -472,11 +545,28 @@ describe('OnboardingService', () => {
         STORAGE_KEYS.CONSENT_GIVEN,
         STORAGE_KEYS.CONSENT_DATE,
         STORAGE_KEYS.CONSENT_VERSION,
+        STORAGE_KEYS.CONSENT_SIGNATURE,
         STORAGE_KEYS.MEDICAL_HISTORY,
         STORAGE_KEYS.ELIGIBILITY_RESPONSES,
         STORAGE_KEYS.IPSS_BASELINE,
         STORAGE_KEYS.PERMISSIONS_STATUS,
+        STORAGE_KEYS.SMART_PROVIDER_CONNECTION,
+        `@homeflow_onboarding_finished:${UID_A}`,
       ]);
+    });
+
+    /**
+     * reset() without a uid clears only the shared scratch — appropriate
+     * for a pre-auth reset (e.g. before any user has signed in).
+     */
+    it('should skip the per-uid flag when called without a uid', async () => {
+      const service = createOnboardingService();
+      await service.start();
+      await service.reset(null);
+
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledWith(
+        expect.not.arrayContaining([expect.stringMatching(/^@homeflow_onboarding_finished:/)]),
+      );
     });
 
     /**
@@ -485,7 +575,7 @@ describe('OnboardingService', () => {
     it('should report as not started after reset', async () => {
       const service = createOnboardingService();
       await service.start();
-      await service.reset();
+      await service.reset(UID_A);
 
       // Simulate cleared storage
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);

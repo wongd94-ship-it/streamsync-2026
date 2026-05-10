@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   useColorScheme,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, StanfordColors, Spacing } from '@/constants/theme';
@@ -29,6 +30,9 @@ interface PermissionCardProps {
   onSkip?: () => void;
   optional?: boolean;
   comingSoon?: boolean;
+  controlStyle?: 'button' | 'toggle';
+  footerLinkLabel?: string;
+  onFooterLinkPress?: () => void;
 }
 
 export function PermissionCard({
@@ -40,6 +44,9 @@ export function PermissionCard({
   onSkip,
   optional = false,
   comingSoon = false,
+  controlStyle = 'button',
+  footerLinkLabel,
+  onFooterLinkPress,
 }: PermissionCardProps) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
@@ -87,6 +94,8 @@ export function PermissionCard({
   };
 
   const isDisabled = status === 'granted' || status === 'loading' || comingSoon;
+  const showToggle = controlStyle === 'toggle';
+  const toggleValue = status === 'granted';
 
   return (
     <View
@@ -133,37 +142,66 @@ export function PermissionCard({
       </Text>
 
       <View style={styles.actions}>
-        <TouchableOpacity
-          style={[
-            styles.button,
-            {
-              backgroundColor: isDisabled
-                ? colorScheme === 'dark'
-                  ? '#2C2C2E'
-                  : '#F2F2F7'
-                : StanfordColors.cardinal,
-            },
-          ]}
-          onPress={onRequest}
-          disabled={isDisabled}
-        >
-          {status === 'loading' ? (
-            <ActivityIndicator color="#FFFFFF" size="small" />
-          ) : (
-            <Text
-              style={[
-                styles.buttonText,
-                {
-                  color: isDisabled
-                    ? colors.icon
-                    : '#FFFFFF',
-                },
-              ]}
-            >
-              {getButtonText()}
-            </Text>
-          )}
-        </TouchableOpacity>
+        {showToggle ? (
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleCopy}>
+              <Text style={[styles.toggleLabel, { color: colors.text }]}>
+                {toggleValue ? 'Enabled' : 'Enable'}
+              </Text>
+              {status === 'denied' && (
+                <Text style={[styles.toggleHint, { color: colors.icon }]}>
+                  Open Settings if you previously declined
+                </Text>
+              )}
+            </View>
+            {status === 'loading' ? (
+              <ActivityIndicator color={StanfordColors.cardinal} size="small" />
+            ) : (
+              <Switch
+                value={toggleValue}
+                onValueChange={() => {
+                  if (!toggleValue) onRequest();
+                }}
+                disabled={comingSoon || status === 'loading'}
+                trackColor={{ false: '#D1D1D6', true: '#8BC48A' }}
+                thumbColor={toggleValue ? '#34C759' : '#FFFFFF'}
+                ios_backgroundColor="#D1D1D6"
+              />
+            )}
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[
+              styles.button,
+              {
+                backgroundColor: isDisabled
+                  ? colorScheme === 'dark'
+                    ? '#2C2C2E'
+                    : '#F2F2F7'
+                  : StanfordColors.cardinal,
+              },
+            ]}
+            onPress={onRequest}
+            disabled={isDisabled}
+          >
+            {status === 'loading' ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <Text
+                style={[
+                  styles.buttonText,
+                  {
+                    color: isDisabled
+                      ? colors.icon
+                      : '#FFFFFF',
+                  },
+                ]}
+              >
+                {getButtonText()}
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
 
         {optional && status === 'not_determined' && onSkip && (
           <TouchableOpacity style={styles.skipButton} onPress={onSkip}>
@@ -171,6 +209,16 @@ export function PermissionCard({
           </TouchableOpacity>
         )}
       </View>
+
+      {footerLinkLabel && onFooterLinkPress ? (
+        <TouchableOpacity
+          style={styles.footerLinkButton}
+          onPress={onFooterLinkPress}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.footerLinkText}>{footerLinkLabel}</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -212,6 +260,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
+  },
+  footerLinkButton: {
+    marginTop: Spacing.sm,
+    alignSelf: 'flex-start',
+  },
+  footerLinkText: {
+    color: StanfordColors.cardinal,
+    fontSize: FontSize.footnote,
+    fontWeight: FontWeight.medium,
+  },
+  toggleRow: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  toggleCopy: {
+    flex: 1,
+    paddingRight: Spacing.sm,
+  },
+  toggleLabel: {
+    fontSize: FontSize.subhead,
+    fontWeight: FontWeight.semibold,
+  },
+  toggleHint: {
+    fontSize: FontSize.footnote,
+    marginTop: 2,
   },
   button: {
     flex: 1,

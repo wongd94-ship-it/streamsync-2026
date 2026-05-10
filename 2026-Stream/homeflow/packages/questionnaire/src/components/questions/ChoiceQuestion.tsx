@@ -8,13 +8,14 @@ interface ChoiceQuestionProps {
   item: QuestionnaireItem;
   formik: FormikProps<Record<string, unknown>>;
   theme: QuestionnaireTheme;
+  onAnswered?: (linkId: string, value: unknown) => void;
 }
 
 /**
  * Renders a choice (single-select) question
  * Handles FHIR 'choice' type with answerOption
  */
-export function ChoiceQuestion({ item, formik, theme }: ChoiceQuestionProps) {
+export function ChoiceQuestion({ item, formik, theme, onAnswered }: ChoiceQuestionProps) {
   const linkId = item.linkId!;
   const hasError = formik.touched[linkId] && formik.errors[linkId];
 
@@ -76,7 +77,11 @@ export function ChoiceQuestion({ item, formik, theme }: ChoiceQuestionProps) {
                   opacity: pressed ? 0.7 : 1,
                 },
               ]}
-              onPress={() => formik.setFieldValue(linkId, value)}
+              onPress={() => {
+                formik.setFieldValue(linkId, value);
+                formik.setFieldTouched(linkId, true, false);
+                onAnswered?.(linkId, value);
+              }}
               accessibilityRole="button"
               accessibilityLabel={display}
               accessibilityHint={`Select ${display}`}

@@ -12,12 +12,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  LayoutChangeEvent,
 } from 'react-native';
 import Alert from '@blazejkustra/react-native-alert';
 import { Formik, FormikProps } from 'formik';
 import type { Questionnaire, QuestionnaireResponse, QuestionnaireResponseItem } from 'fhir/r4';
 import { QuestionnaireFormProps } from '../types';
 import { createValidationSchema } from '../validation/schema-builder';
+import { EnableWhenEvaluator } from '../enablewhen/EnableWhenEvaluator';
 import { defaultLightTheme, mergeTheme } from '../theme/default-theme';
 import { QuestionRenderer } from './QuestionRenderer';
 
@@ -169,6 +171,7 @@ export function QuestionnaireForm({
   cancelButtonText = 'Cancel',
   keyboardVerticalOffset = Platform.OS === 'ios' ? 64 : 0,
   scrollContentStyle,
+  autoAdvanceOnChoice = false,
 }: QuestionnaireFormProps) {
   const [showCompletion, setShowCompletion] = useState(false);
   const [completedResponse, setCompletedResponse] = useState<QuestionnaireResponse | null>(null);
@@ -188,6 +191,8 @@ export function QuestionnaireForm({
 
   // Store reference to Formik instance for enableWhen evaluation
   const formikRef = useRef<FormikProps<Record<string, unknown>> | null>(null);
+  const scrollViewRef = useRef<ScrollView | null>(null);
+  const itemLayoutsRef = useRef<Record<string, number>>({});
 
   // Track form values for enableWhen evaluation
   const [formValues, setFormValues] = useState<Record<string, unknown>>(initialValues);
@@ -196,6 +201,38 @@ export function QuestionnaireForm({
     () => buildQuestionnaireResponse(questionnaire, formValues),
     [questionnaire, formValues]
   );
+
+  const handleItemLayout = useCallback((linkId: string, event: LayoutChangeEvent) => {
+    itemLayoutsRef.current[linkId] = event.nativeEvent.layout.y;
+  }, []);
+
+  const handleChoiceAnswered = useCallback((linkId: string, value: unknown) => {
+    if (!autoAdvanceOnChoice) return;
+
+    requestAnimationFrame(() => {
+      const items = questionnaire.item ?? [];
+      const currentIndex = items.findIndex((item) => item.linkId === linkId);
+      if (currentIndex === -1) return;
+
+      const nextValues = {
+        ...(formikRef.current?.values ?? {}),
+        [linkId]: value,
+      };
+      const nextResponse = buildQuestionnaireResponse(questionnaire, nextValues);
+      const evaluator = new EnableWhenEvaluator(questionnaire, nextResponse);
+
+      const nextItem = items.slice(currentIndex + 1).find((candidate) => evaluator.evaluate(candidate));
+      if (!nextItem?.linkId) return;
+
+      const nextY = itemLayoutsRef.current[nextItem.linkId];
+      if (nextY == null) return;
+
+      scrollViewRef.current?.scrollTo({
+        y: Math.max(nextY - 24, 0),
+        animated: true,
+      });
+    });
+  }, [autoAdvanceOnChoice, questionnaire]);
 
   const handleCancel = useCallback(() => {
     if (cancelBehavior === 'disabled') return;
@@ -337,6 +374,7 @@ export function QuestionnaireForm({
           return (
             <>
               <ScrollView
+                ref={scrollViewRef}
                 style={styles.scrollView}
                 contentContainerStyle={[
                   styles.scrollContent,
@@ -373,14 +411,19 @@ export function QuestionnaireForm({
                 </View>
 
                 {questionnaire.item?.map((item: any) => (
-                  <QuestionRenderer
+                  <View
                     key={item.linkId}
-                    item={item}
-                    formik={formik}
-                    theme={theme}
-                    questionnaire={questionnaire}
-                    questionnaireResponse={currentResponse}
-                  />
+                    onLayout={(event) => handleItemLayout(item.linkId, event)}
+                  >
+                    <QuestionRenderer
+                      item={item}
+                      formik={formik}
+                      theme={theme}
+                      questionnaire={questionnaire}
+                      questionnaireResponse={currentResponse}
+                      onChoiceAnswered={handleChoiceAnswered}
+                    />
+                  </View>
                 ))}
               </ScrollView>
 

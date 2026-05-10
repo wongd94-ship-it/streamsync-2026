@@ -24,6 +24,19 @@ jest.mock('firebase/app', () => ({
   getApp: jest.fn(),
 }));
 
+jest.mock('firebase/firestore', () => ({
+  getFirestore: jest.fn(() => ({})),
+  collection: jest.fn(),
+  doc: jest.fn(),
+  getDoc: jest.fn(),
+  getDocs: jest.fn(),
+  setDoc: jest.fn(),
+  query: jest.fn(),
+  where: jest.fn(),
+  onSnapshot: jest.fn(),
+  serverTimestamp: jest.fn(),
+}));
+
 jest.mock('firebase/auth', () => ({
   signInWithEmailAndPassword: jest.fn(),
   createUserWithEmailAndPassword: jest.fn(),

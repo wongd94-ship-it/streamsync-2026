@@ -12,11 +12,12 @@ import {
   StyleSheet,
   useColorScheme,
   Animated,
+  TouchableOpacity,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, Href } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, StanfordColors, Spacing } from '@/constants/theme';
-import { STUDY_INFO, OnboardingStep } from '@/lib/constants';
+import { STUDY_INFO } from '@/lib/constants';
 import { OnboardingService } from '@/lib/services/onboarding-service';
 import { ContinueButton } from '@/components/onboarding';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -87,9 +88,6 @@ export default function WelcomeScreen() {
           <Text style={[styles.title, { color: colors.text }]}>
             Welcome to StreamSync
           </Text>
-          <Text style={[styles.subtitle, { color: colors.icon }]}>
-            {STUDY_INFO.institution}
-          </Text>
         </Animated.View>
 
         <Animated.View
@@ -103,7 +101,8 @@ export default function WelcomeScreen() {
         >
           <Text style={[styles.description, { color: colors.text }]}>
             Thank you for your interest in the {STUDY_INFO.name}. This app will help us
-            understand how bladder outlet surgery affects your daily patterns.
+            understand how voiding patterns and physical activity predict voiding
+            etiology and procedural success in men with BPH.
           </Text>
 
           <View style={styles.features}>
@@ -134,6 +133,15 @@ export default function WelcomeScreen() {
           The next few screens will check your eligibility and collect some basic information.
         </Text>
         <ContinueButton title="Get Started" onPress={handleContinue} />
+        <TouchableOpacity
+          onPress={() => router.push('/(onboarding)/sign-in' as Href)}
+          style={styles.signInButton}
+          accessibilityRole="button"
+        >
+          <Text style={[styles.signInText, { color: colors.text }]}>
+            Already have an account? <Text style={styles.signInLink}>Sign In</Text>
+          </Text>
+        </TouchableOpacity>
       </Animated.View>
 
     </SafeAreaView>
@@ -201,11 +209,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 8,
   },
-  subtitle: {
-    fontSize: FontSize.subhead,
-    textAlign: 'center',
-    marginBottom: Spacing.lg,
-  },
   descriptionContainer: {
     flex: 1,
   },
@@ -250,5 +253,16 @@ const styles = StyleSheet.create({
     fontSize: FontSize.footnote,
     textAlign: 'center',
     lineHeight: 20,
+  },
+  signInButton: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  signInText: {
+    fontSize: FontSize.subhead,
+  },
+  signInLink: {
+    color: StanfordColors.cardinal,
+    fontWeight: FontWeight.semibold,
   },
 });

@@ -12,13 +12,11 @@ import {
   StyleSheet,
   useColorScheme,
   Animated,
-  Linking,
 } from 'react-native';
-import { useRouter, Href } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing } from '@/constants/theme';
-import { STUDY_INFO, OnboardingStep } from '@/lib/constants';
-import { OnboardingService } from '@/lib/services/onboarding-service';
+import { STUDY_INFO } from '@/lib/constants';
 import { ContinueButton } from '@/components/onboarding';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
@@ -47,19 +45,12 @@ export default function IneligibleScreen() {
     ]).start();
   }, [fadeAnim, slideAnim]);
 
-  const handleContact = () => {
-    Linking.openURL(`mailto:${STUDY_INFO.contactEmail}`);
-  };
-
-  const handleClose = () => {
-    // In a real app, this might clear data and exit
-    // For now, we'll just stay on this screen
-  };
-
-  // Dev-only: skip past ineligible to continue testing the flow
-  const handleDevContinue = async () => {
-    await OnboardingService.goToStep(OnboardingStep.CONSENT);
-    router.push('/(onboarding)/consent' as Href);
+  const handleReturn = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace('/(onboarding)/chat');
   };
 
   return (
@@ -92,37 +83,15 @@ export default function IneligibleScreen() {
           Based on your responses, you don&apos;t currently meet the eligibility criteria for the {STUDY_INFO.name}.
         </Text>
 
-        <View
-          style={[
-            styles.infoBox,
-            { backgroundColor: colorScheme === 'dark' ? '#1C1C1E' : '#F2F2F7' },
-          ]}
-        >
-          <Text style={[styles.infoTitle, { color: colors.text }]}>
-            Why might I not be eligible?
-          </Text>
-          <Text style={[styles.infoText, { color: colors.icon }]}>
-            This study requires:
-            {'\n'}{'\n'}• An iPhone with iOS 15 or later
-            {'\n'}• BPH or lower urinary tract symptoms suspected to be caused by BPH
-            {'\n'}• Planning to undergo a bladder outlet procedure
-          </Text>
-        </View>
-
         <Text style={[styles.contactPrompt, { color: colors.text }]}>
-          If you believe this is an error or have questions, please contact the research team.
+          If you have questions, please contact the research team at info@streamsyncresearch.com.
         </Text>
       </Animated.View>
 
       <View style={styles.footer}>
         <ContinueButton
-          title="Contact Research Team"
-          onPress={handleContact}
-          variant="secondary"
-        />
-        <ContinueButton
-          title="Close"
-          onPress={handleClose}
+          title="Return"
+          onPress={handleReturn}
           variant="text"
         />
       </View>
@@ -162,20 +131,6 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     textAlign: 'center',
     marginBottom: Spacing.xl,
-  },
-  infoBox: {
-    borderRadius: 12,
-    padding: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  infoTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: Spacing.sm,
-  },
-  infoText: {
-    fontSize: 15,
-    lineHeight: 22,
   },
   contactPrompt: {
     fontSize: 15,

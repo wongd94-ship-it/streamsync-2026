@@ -240,6 +240,7 @@ export default function BaselineSurveyScreen() {
           questionnaire={IPSS_QUESTIONNAIRE}
           onResult={handleSubmit}
           submitButtonText="Submit Survey"
+          autoAdvanceOnChoice
           // Fix for scroll issue: Ensure keyboard doesn't cover input and content scrolls past footer
           keyboardVerticalOffset={100}
           scrollContentStyle={{ paddingBottom: 120 }}

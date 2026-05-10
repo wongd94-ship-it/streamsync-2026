@@ -13,6 +13,7 @@ import {
   StyleSheet,
   useColorScheme,
   Animated,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,11 +24,19 @@ import { notifyOnboardingComplete } from '@/hooks/use-onboarding-status';
 import { ContinueButton } from '@/components/onboarding';
 import { devSkipAuth } from '@/lib/dev-flags';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { getAuth } from '@/src/services/firestore';
+import { useAuth } from '@/hooks/use-auth';
 
 export default function CompleteScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
+  // Fallback uid source — useAuth() reflects the AuthProvider context which
+  // hydrates via onAuthStateChanged. In rare Release-mode timing windows
+  // getAuth().currentUser may be momentarily null while the context still
+  // has the user from the prior sign-up. We try the direct Firebase call
+  // first (freshest source of truth) and fall back to the context.
+  const { user } = useAuth();
 
   const [showButton, setShowButton] = useState(false);
 
@@ -87,16 +96,70 @@ export default function CompleteScreen() {
     });
   }, [checkScale, checkOpacity, contentFade, contentSlide, confettiOpacity]);
 
-  const handleSignIn = async () => {
-    await OnboardingService.complete();
-    notifyOnboardingComplete();
-    router.replace('/(auth)/login' as any);
+  const handleContinue = async () => {
+    // Diagnostic wrapper — if ANYTHING in this flow fails silently the
+    // user just sees "nothing happens" when they tap Continue. Surface
+    // every failure path via Alert so we can diagnose from the device.
+    const currentUserFromAuth = getAuth().currentUser;
+    const uidFromFirebase = currentUserFromAuth?.uid;
+    const uidFromContext = user?.id;
+    const uid = uidFromFirebase ?? uidFromContext;
+
+    if (!uid) {
+      Alert.alert(
+        'Cannot finish onboarding',
+        [
+          'No authenticated user was found when you tapped Continue.',
+          `Firebase currentUser: ${currentUserFromAuth ? 'present' : 'null'}`,
+          `Auth context user: ${user ? 'present' : 'null'}`,
+          '',
+          'This usually means your sign-up did not complete. Please restart the app and try again.',
+        ].join('\n'),
+        [
+          {
+            text: 'Go to login',
+            onPress: () => router.replace('/(auth)/login' as any),
+          },
+        ],
+      );
+      return;
+    }
+
+    try {
+      await OnboardingService.complete(uid);
+      notifyOnboardingComplete();
+      // Let React commit the onboardingComplete=true state before
+      // router.replace fires and redirect guards re-evaluate.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      router.replace('/(tabs)');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert(
+        'Could not finish onboarding',
+        `Error: ${message}\n\nPlease take a screenshot and contact support.`,
+        [
+          {
+            text: 'Try anyway',
+            onPress: () => router.replace('/(tabs)'),
+          },
+          { text: 'OK' },
+        ],
+      );
+    }
   };
 
   const handleDevContinue = async () => {
     devSkipAuth(); // Set flag BEFORE notifyOnboardingComplete so index.tsx re-render skips auth
-    await OnboardingService.complete();
+    const uid = getAuth().currentUser?.uid ?? user?.id;
+    if (uid) {
+      await OnboardingService.complete(uid);
+    } else {
+      console.warn('[Complete] No authenticated uid at dev onboarding completion; skipping per-uid finished flag write.');
+    }
     notifyOnboardingComplete();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
     router.replace('/(tabs)');
   };
 
@@ -182,7 +245,7 @@ export default function CompleteScreen() {
           >
             <IconSymbol name={'info.circle.fill' as any} size={20} color={StanfordColors.cardinal} />
             <Text style={[styles.tipText, { color: colors.text }]}>
-              For the best experience, wear your Apple Watch regularly and keep the StreamSync app running in the background.
+              You&apos;re ready to enter the app and review your study dashboard.
             </Text>
           </View>
         </Animated.View>
@@ -195,7 +258,7 @@ export default function CompleteScreen() {
             { opacity: contentFade },
           ]}
         >
-          <ContinueButton title="Sign In to Continue" onPress={handleSignIn} />
+          <ContinueButton title="Continue to Your Study Dashboard" onPress={handleContinue} />
           {__DEV__ && (
             <TouchableOpacity
               style={styles.devBypassButton}

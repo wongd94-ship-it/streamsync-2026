@@ -1,8 +1,8 @@
 /**
  * Account Screen (Onboarding)
  *
- * Sign in or create account step, positioned after consent and before permissions.
- * In dev mode, a skip button allows bypassing auth for faster iteration.
+ * Account-creation step, positioned after consent and before permissions.
+ * Returning users sign in from the Welcome screen; this screen is signup-only.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,7 +26,7 @@ import { Colors, StanfordColors, Spacing } from '@/constants/theme';
 import { OnboardingStep } from '@/lib/constants';
 import { OnboardingService } from '@/lib/services/onboarding-service';
 import { useAuth } from '@/hooks/use-auth';
-import { saveSurgeryDate } from '@/src/services/throneFirestore';
+import { saveSurgeryDate, saveStudyTimeline, saveUrodynamicsDate, registerThroneResearchParticipant } from '@/src/services/throneFirestore';
 import { getAuth } from '@/src/services/firestore';
 import { uploadConsentPdf } from '@/src/services/consentPdfSync';
 import {
@@ -37,9 +37,8 @@ export default function AccountScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
-  const { signInWithEmail, signUpWithEmail, signInWithGoogle, isAuthenticated } = useAuth();
+  const { signUpWithEmail, signInWithGoogle, isAuthenticated } = useAuth();
 
-  const [mode, setMode] = useState<'login' | 'signup'>('signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [firstName, setFirstName] = useState('');
@@ -55,13 +54,43 @@ export default function AccountScreen() {
     try {
       if (uid) {
         const data = await OnboardingService.getData();
+        const persistenceJobs: Promise<unknown>[] = [];
 
         // Flush surgery date collected pre-login
         const surgeryDate = data.eligibility?.surgeryDate;
         if (surgeryDate) {
-          saveSurgeryDate(uid, surgeryDate).catch((err) => {
+          persistenceJobs.push(saveSurgeryDate(uid, surgeryDate).catch((err) => {
             console.warn('[Account] Failed to flush surgery date to Firestore:', err);
-          });
+          }));
+        }
+
+        // Flush urodynamics date collected pre-login
+        const udsDate = data.eligibility?.urodynamicsDate;
+        if (udsDate) {
+          persistenceJobs.push(saveUrodynamicsDate(uid, udsDate).catch((err) => {
+            console.warn('[Account] Failed to flush urodynamics date to Firestore:', err);
+          }));
+        }
+
+        const studyPathway = data.eligibility?.studyPathway;
+        const anchorDateType = data.eligibility?.anchorDateType;
+        if (studyPathway || anchorDateType || surgeryDate || udsDate) {
+          persistenceJobs.push(saveStudyTimeline(uid, {
+            studyPathway: studyPathway ?? null,
+            anchorDateType: anchorDateType ?? null,
+            surgeryDate: surgeryDate ?? null,
+            urodynamicsDate: udsDate ?? null,
+          }).catch((err) => {
+            console.warn('[Account] Failed to flush study timeline to Firestore:', err);
+          }));
+        }
+
+        // Register in the Throne research participant registry (email-keyed)
+        const email = getAuth().currentUser?.email;
+        if (email) {
+          persistenceJobs.push(registerThroneResearchParticipant(email, uid).catch((err) => {
+            console.warn('[Account] Failed to register Throne research participant:', err);
+          }));
         }
 
         // Upload consent PDF now that we have a UID
@@ -83,6 +112,10 @@ export default function AccountScreen() {
             });
           });
         }
+
+        if (persistenceJobs.length) {
+          await Promise.allSettled(persistenceJobs);
+        }
       }
 
       await OnboardingService.goToStep(OnboardingStep.PERMISSIONS);
@@ -103,50 +136,33 @@ export default function AccountScreen() {
     const trimmedEmail = email.trim();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (mode === 'signup') {
-      if (!firstName.trim() || !lastName.trim()) {
-        Alert.alert('Missing Fields', 'Please enter your first and last name.');
-        return;
-      }
-      if (!trimmedEmail || !emailRegex.test(trimmedEmail)) {
-        Alert.alert('Invalid Email', 'Please enter a valid email address.');
-        return;
-      }
-      if (!password || password.length < 8) {
-        Alert.alert('Weak Password', 'Password must be at least 8 characters.');
-        return;
-      }
-    } else {
-      if (!trimmedEmail || !emailRegex.test(trimmedEmail)) {
-        Alert.alert('Invalid Email', 'Please enter a valid email address.');
-        return;
-      }
-      if (!password || password.length < 8) {
-        Alert.alert('Invalid Password', 'Password must be at least 8 characters.');
-        return;
-      }
+    if (!firstName.trim() || !lastName.trim()) {
+      Alert.alert('Missing Fields', 'Please enter your first and last name.');
+      return;
+    }
+    if (!trimmedEmail || !emailRegex.test(trimmedEmail)) {
+      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      return;
+    }
+    if (!password || password.length < 8) {
+      Alert.alert('Weak Password', 'Password must be at least 8 characters.');
+      return;
     }
 
     setLoading(true);
     try {
-      if (mode === 'signup') {
-        await signUpWithEmail(trimmedEmail, password, {
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-        });
-      } else {
-        await signInWithEmail(trimmedEmail, password);
-      }
+      await signUpWithEmail(trimmedEmail, password, {
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+      });
       await handleAdvance();
     } catch (error: any) {
       const code = error?.code ?? '';
       const rawMessage = error?.message ?? '';
-      console.error('[Account] Email auth failed:', { mode, code, rawMessage });
+      console.error('[Account] Sign-up failed:', { code, rawMessage });
       const message =
-        code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found'
-          ? 'Invalid email or password.'
-          : code === 'auth/email-already-in-use'
-          ? 'An account with this email already exists. Try signing in.'
+        code === 'auth/email-already-in-use'
+          ? 'An account with this email already exists. Return to the welcome screen and tap Sign In.'
           : code === 'auth/operation-not-allowed'
           ? 'Email/password authentication is not enabled for this Firebase project.'
           : code === 'auth/too-many-requests'
@@ -157,7 +173,7 @@ export default function AccountScreen() {
           ? 'Please enter a valid email address.'
           : code === 'auth/network-request-failed'
           ? 'Network error. Check your connection and try again.'
-          : rawMessage || 'Authentication failed. Please try again.';
+          : rawMessage || 'Account creation failed. Please try again.';
       Alert.alert('Error', message);
     } finally {
       setLoading(false);
@@ -191,41 +207,35 @@ export default function AccountScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.header}>
-            <Text style={[styles.title, { color: colors.text }]}>
-              {mode === 'signup' ? 'Create Account' : 'Sign In'}
-            </Text>
+            <Text style={[styles.title, { color: colors.text }]}>Create Account</Text>
             <Text style={[styles.subtitle, { color: colors.icon }]}>
-              {mode === 'signup'
-                ? 'Create an account to securely store your study data.'
-                : 'Sign in to continue to StreamSync.'}
+              Create an account to securely store your study data.
             </Text>
           </View>
 
           <View style={styles.form}>
-            {mode === 'signup' && (
-              <View style={styles.nameRow}>
-                <TextInput
-                  style={[styles.input, styles.nameInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
-                  placeholder="First Name"
-                  placeholderTextColor={colors.icon}
-                  value={firstName}
-                  onChangeText={setFirstName}
-                  autoCapitalize="words"
-                  textContentType="givenName"
-                  editable={!loading}
-                />
-                <TextInput
-                  style={[styles.input, styles.nameInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
-                  placeholder="Last Name"
-                  placeholderTextColor={colors.icon}
-                  value={lastName}
-                  onChangeText={setLastName}
-                  autoCapitalize="words"
-                  textContentType="familyName"
-                  editable={!loading}
-                />
-              </View>
-            )}
+            <View style={styles.nameRow}>
+              <TextInput
+                style={[styles.input, styles.nameInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
+                placeholder="First Name"
+                placeholderTextColor={colors.icon}
+                value={firstName}
+                onChangeText={setFirstName}
+                autoCapitalize="words"
+                textContentType="givenName"
+                editable={!loading}
+              />
+              <TextInput
+                style={[styles.input, styles.nameInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
+                placeholder="Last Name"
+                placeholderTextColor={colors.icon}
+                value={lastName}
+                onChangeText={setLastName}
+                autoCapitalize="words"
+                textContentType="familyName"
+                editable={!loading}
+              />
+            </View>
 
             <TextInput
               style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
@@ -238,6 +248,12 @@ export default function AccountScreen() {
               textContentType="emailAddress"
               editable={!loading}
             />
+            <View style={styles.emailCallout}>
+              <Text style={styles.emailCalloutText}>
+                <Text style={styles.emailCalloutBold}>Important: </Text>
+                Use this same email when you set up your Throne device. We store it as your Throne account email, but your actual Throne user ID must still come from Throne itself to link voiding data correctly.
+              </Text>
+            </View>
             <TextInput
               style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
               placeholder="Password"
@@ -245,7 +261,7 @@ export default function AccountScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
-              textContentType={mode === 'signup' ? 'newPassword' : 'password'}
+              textContentType="newPassword"
               editable={!loading}
             />
 
@@ -257,9 +273,7 @@ export default function AccountScreen() {
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.primaryButtonText}>
-                  {mode === 'signup' ? 'Create Account' : 'Sign In'}
-                </Text>
+                <Text style={styles.primaryButtonText}>Create Account</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -281,21 +295,11 @@ export default function AccountScreen() {
                 style={styles.googleLogo}
               />
               <Text style={[styles.socialButtonText, { color: colors.text }]}>
-                Sign in with Google
+                Continue with Google
               </Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.footer}>
-            <Text style={[styles.footerText, { color: colors.icon }]}>
-              {mode === 'signup' ? 'Already have an account? ' : "Don't have an account? "}
-            </Text>
-            <TouchableOpacity onPress={() => setMode(mode === 'signup' ? 'login' : 'signup')}>
-              <Text style={[styles.linkText, { color: StanfordColors.cardinal }]}>
-                {mode === 'signup' ? 'Sign In' : 'Sign Up'}
-              </Text>
-            </TouchableOpacity>
-          </View>
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -338,6 +342,22 @@ const styles = StyleSheet.create({
   },
   nameInput: {
     flex: 1,
+  },
+  emailCallout: {
+    backgroundColor: '#FFF4CC',
+    borderLeftWidth: 4,
+    borderLeftColor: '#B8860B',
+    borderRadius: 8,
+    padding: Spacing.sm,
+    marginTop: -Spacing.sm,
+  },
+  emailCalloutText: {
+    color: '#5C4400',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  emailCalloutBold: {
+    fontWeight: '700',
   },
   input: {
     height: 52,
@@ -441,17 +461,5 @@ const styles = StyleSheet.create({
   switchButtonText: {
     fontSize: 15,
     fontWeight: '500',
-  },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: Spacing.xl,
-  },
-  footerText: {
-    fontSize: 15,
-  },
-  linkText: {
-    fontSize: 15,
-    fontWeight: '600',
   },
 });

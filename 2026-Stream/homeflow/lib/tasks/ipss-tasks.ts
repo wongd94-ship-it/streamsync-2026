@@ -16,12 +16,36 @@ export const IPSS_TASK_IDS = {
   ONE_MONTH:   'ipss-followup-1month',
   TWO_MONTH:   'ipss-followup-2month',
   THREE_MONTH: 'ipss-followup-3month',
+  POST_UDS:    'ipss-followup-post-uds',
 } as const;
 
 function addDays(surgeryDateStr: string, days: number): Date {
   const d = new Date(surgeryDateStr + 'T12:00:00');
   d.setDate(d.getDate() + days);
   return d;
+}
+
+/**
+ * Create a post-UDS IPSS task anchored to the urodynamics date (2 weeks after).
+ */
+export function createIPSSPostUdsTasks(
+  urodynamicsDateStr: string,
+): Omit<Task, 'createdAt'>[] {
+  return [
+    {
+      id: IPSS_TASK_IDS.POST_UDS,
+      title: 'IPSS Survey — Post-Urodynamics',
+      instructions:
+        'Please complete the International Prostate Symptom Score (IPSS) questionnaire 2 weeks after your urodynamics study.',
+      category: 'questionnaire',
+      questionnaireId: 'ipss',
+      schedule: {
+        startDate: addDays(urodynamicsDateStr, 14),
+        recurrence: { type: 'once', date: addDays(urodynamicsDateStr, 14) },
+      },
+      completionPolicy: { type: 'anytime' },
+    },
+  ];
 }
 
 export function createIPSSFollowUpTasks(

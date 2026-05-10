@@ -1,4 +1,4 @@
-# Getting Started with HomeFlow
+# Getting Started with StreamSync
 
 This guide will help you set up and run your app.
 
@@ -11,8 +11,8 @@ npm install
 # Copy environment file and add your keys
 cp .env.example .env
 
-# Start the development server
-npm start
+# Start the iPhone simulator with Metro attached
+npm run ios:sim
 ```
 
 ## Environment Setup
@@ -45,6 +45,16 @@ Add the keys to your `.env` file:
 EXPO_PUBLIC_OPENAI_API_KEY=your-api-key
 ```
 
+### iOS Prerequisites
+
+Before opening the iOS app for the first time, make sure the machine has:
+
+- Node.js available in a normal shell
+- Xcode and an installed iOS simulator runtime
+- CocoaPods available for the local Ruby setup
+
+The app uses a native Expo development build, not Expo Go.
+
 ### HealthKit Setup (iOS Only)
 
 Your app includes Apple HealthKit integration for health data access.
@@ -55,13 +65,21 @@ Your app includes Apple HealthKit integration for health data access.
 #### Building for iOS:
 
 ```bash
-# Create native iOS project and run
-npx expo prebuild --platform ios
-npx expo run:ios
+# Simulator development build
+npm run ios:sim
 
-# Or use EAS Build
-eas build --platform ios --profile development
+# Physical iPhone development build
+npm run ios:device
+
+# Start Metro for an already-installed development build
+npm run ios:metro
 ```
+
+Important:
+
+- `Debug` builds expect Metro to be running when the app opens.
+- If you launch the app directly from Simulator or Xcode without Metro, you can get `No script URL provided`.
+- `Release` builds embed the JS bundle and can launch without Metro.
 
 #### Testing:
 
@@ -87,7 +105,10 @@ Based on your selections, your app includes:
 
 ```bash
 # iOS Simulator
-npm run ios
+npm run ios:sim
+
+# iPhone
+npm run ios:device
 
 # Android Emulator
 npm run android

@@ -4,6 +4,18 @@
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "headers": [
       {
+        "source": "**/*.html",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+        ]
+      },
+      {
+        "source": "/dashboard/**",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+        ]
+      },
+      {
         "source": "**",
         "headers": [
           { "key": "X-Frame-Options",         "value": "DENY" },
@@ -41,5 +53,13 @@
   },
   "storage": {
     "rules": "storage.rules"
+  },
+  "emulators": {
+    "auth":     { "port": 9099 },
+    "firestore":{ "port": 8080 },
+    "storage":  { "port": 9199 },
+    "functions":{ "port": 5001 },
+    "ui":       { "enabled": true, "port": 4000 },
+    "singleProjectMode": true
   }
 }

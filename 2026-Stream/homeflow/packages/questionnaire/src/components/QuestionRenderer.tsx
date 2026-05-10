@@ -26,6 +26,7 @@ interface QuestionRendererProps {
   theme: QuestionnaireTheme;
   questionnaire: Questionnaire;
   questionnaireResponse: QuestionnaireResponse;
+  onChoiceAnswered?: (linkId: string, value: unknown) => void;
 }
 
 /**
@@ -38,6 +39,7 @@ export const QuestionRenderer = React.memo(function QuestionRenderer({
   theme,
   questionnaire,
   questionnaireResponse,
+  onChoiceAnswered,
 }: QuestionRendererProps) {
   const isEnabled = useMemo(() => {
     const evaluator = new EnableWhenEvaluator(questionnaire, questionnaireResponse);
@@ -73,7 +75,14 @@ export const QuestionRenderer = React.memo(function QuestionRenderer({
 
     case 'choice':
     case 'open-choice':
-      return <ChoiceQuestion item={item} formik={formik} theme={theme} />;
+      return (
+        <ChoiceQuestion
+          item={item}
+          formik={formik}
+          theme={theme}
+          onAnswered={onChoiceAnswered}
+        />
+      );
 
     case 'display':
       return <DisplayQuestion item={item} theme={theme} />;
@@ -86,6 +95,7 @@ export const QuestionRenderer = React.memo(function QuestionRenderer({
           theme={theme}
           questionnaire={questionnaire}
           questionnaireResponse={questionnaireResponse}
+          onChoiceAnswered={onChoiceAnswered}
         />
       );
 

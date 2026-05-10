@@ -93,6 +93,7 @@ export interface QuestionnaireFormProps {
   cancelButtonText?: string;
   keyboardVerticalOffset?: number;
   scrollContentStyle?: ViewStyle;
+  autoAdvanceOnChoice?: boolean;
 }
 
 export type QuestionnaireItemType =

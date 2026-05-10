@@ -181,4 +181,25 @@ describe('ChoiceQuestion', () => {
     expect(getByText('2')).toBeTruthy();
     expect(getByText('3')).toBeTruthy();
   });
+
+  it('should call onAnswered after option press', () => {
+    const onAnswered = jest.fn();
+
+    const { getByText } = render(
+      <Formik initialValues={{}} onSubmit={jest.fn()}>
+        {(formik) => (
+          <ChoiceQuestion
+            item={mockChoiceItem}
+            formik={formik}
+            theme={defaultLightTheme}
+            onAnswered={onAnswered}
+          />
+        )}
+      </Formik>
+    );
+
+    fireEvent.press(getByText('Option B'));
+
+    expect(onAnswered).toHaveBeenCalledWith('test-choice', 'b');
+  });
 });

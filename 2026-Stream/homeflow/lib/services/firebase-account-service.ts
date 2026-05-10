@@ -19,7 +19,10 @@ import {
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { auth } from '../firebase';
 import type { IAccountService, UserProfile } from './account-service';
-import { saveUserProfile } from '@/src/services/throneFirestore';
+import { saveUserProfile, isOnboardingCompleteInFirestore } from '@/src/services/throneFirestore';
+import { claimParticipantRecord } from './participant-claim';
+import { OnboardingService } from './onboarding-service';
+import { notifyOnboardingComplete } from '@/hooks/use-onboarding-status';
 
 const DEFAULT_GOOGLE_IOS_CLIENT_ID =
   '295202330543-6rlqahqi4ncgb5i0tksk3b46omhfin9e.apps.googleusercontent.com';
@@ -39,6 +42,7 @@ function mapFirebaseUser(user: FirebaseUser): UserProfile {
 async function syncRootUserProfile(user: FirebaseUser): Promise<void> {
   const displayName = user.displayName || '';
   const nameParts = displayName.trim().split(/\s+/).filter(Boolean);
+  const normalizedEmail = user.email?.trim().toLowerCase();
 
   await saveUserProfile(user.uid, {
     name: displayName || undefined,
@@ -46,6 +50,7 @@ async function syncRootUserProfile(user: FirebaseUser): Promise<void> {
     firstName: nameParts[0],
     lastName: nameParts.slice(1).join(' ') || undefined,
     email: user.email || undefined,
+    throneAccountEmail: normalizedEmail || undefined,
     createdAt: user.metadata.creationTime || undefined,
   });
 }
@@ -55,6 +60,40 @@ async function syncRootUserProfileSafely(user: FirebaseUser): Promise<void> {
     await syncRootUserProfile(user);
   } catch (error) {
     console.warn('Non-fatal root profile sync failure after auth:', error);
+  }
+
+  // Cross-device onboarding backfill. If this user has completed
+  // onboarding on another device/build, Firestore has the record of it
+  // (either an explicit onboardingComplete flag OR the full set of
+  // onboarding artifacts: consent + baseline IPSS + medical history).
+  // The local per-uid AsyncStorage flag is device-scoped and won't be
+  // set on this install yet. Backfill it so the router routes this
+  // sign-in straight to the dashboard instead of replaying onboarding.
+  // Best-effort — failures fall back to the existing onboarding flow.
+  try {
+    const alreadyLocal = await OnboardingService.isComplete(user.uid);
+    if (!alreadyLocal) {
+      const completeInFirestore = await isOnboardingCompleteInFirestore(user.uid);
+      if (completeInFirestore) {
+        await OnboardingService.complete(user.uid);
+        // Force any mounted useOnboardingStatus hooks to re-read so the
+        // router re-evaluates and navigates straight to tabs.
+        notifyOnboardingComplete();
+        console.info('[Auth] backfilled onboarding-complete flag from Firestore for uid:', user.uid);
+      }
+    }
+  } catch (err) {
+    console.warn('[Auth] onboarding-complete backfill failed:', err);
+  }
+
+  // After every successful auth, ask the backend whether there's a
+  // researcher-created patients/{id} record pending for this email. If so,
+  // the callable links it to the signed-in uid and writes the non-PHI
+  // mirror under users/{uid}. No-op when no pending record exists.
+  // Best-effort: errors are swallowed inside claimParticipantRecord().
+  const claimResult = await claimParticipantRecord();
+  if (claimResult.claimed) {
+    console.info('[Auth] claimed pending participant record:', claimResult.participantId);
   }
 }
 

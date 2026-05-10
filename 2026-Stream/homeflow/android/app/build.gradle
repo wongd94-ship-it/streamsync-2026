@@ -87,9 +87,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.chehan.homeflow'
+    namespace 'com.dwong.homeflow'
     defaultConfig {
-        applicationId 'com.chehan.homeflow'
+        applicationId 'com.dwong.homeflow'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

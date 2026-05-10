@@ -231,9 +231,12 @@ export default function ThroneSessionDetailScreen() {
     async function load() {
       if (!id || !uid) return;
       try {
+        // Fetch the signed-in user's own throne session data — was
+        // previously hardcoded to DEMO_THRONE_UID, which leaked another
+        // account's session onto the detail screen.
         const [allSessions, metrics] = await Promise.all([
-          fetchSessions(DEMO_THRONE_UID),
-          fetchMetricsForSession(DEMO_THRONE_UID, id),
+          fetchSessions(uid),
+          fetchMetricsForSession(uid, id),
         ]);
         if (!cancelled) {
           setSession(allSessions.find((s) => s.id === id));

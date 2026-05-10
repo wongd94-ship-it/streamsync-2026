@@ -12,33 +12,55 @@
 
 import { useEffect, useRef } from 'react';
 import { useStandard } from '@/lib/services/standard-context';
-import { useSurgeryDate } from '@/hooks/use-surgery-date';
-import { createIPSSFollowUpTasks, IPSS_TASK_IDS } from '@/lib/tasks/ipss-tasks';
+import { useStudyDates } from '@/hooks/use-study-dates';
+import { createIPSSFollowUpTasks, createIPSSPostUdsTasks, IPSS_TASK_IDS } from '@/lib/tasks/ipss-tasks';
+import { scheduleIPSSNotifications } from '@/lib/services/notification-service';
 
 export function useIPSSTaskSetup(): void {
   const { scheduler } = useStandard();
-  const surgeryDate = useSurgeryDate();
-  const seededRef = useRef(false);
+  const study = useStudyDates();
+  const seededKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (seededRef.current) return;
     if (!scheduler) return;
-    if (surgeryDate.isLoading) return;
-    // Skip placeholder dates (dev only) — wait for a real surgery date
-    if (!surgeryDate.date || surgeryDate.isPlaceholder) return;
+    if (study.isLoading) return;
 
-    // Idempotency check: if the 1-month task already exists, all three were seeded
-    if (scheduler.getTask(IPSS_TASK_IDS.ONE_MONTH)) {
-      seededRef.current = true;
-      return;
+    async function seed() {
+      const seedKey = `${study.studyPathway ?? 'none'}:${study.surgery.date ?? 'none'}:${study.urodynamics.date ?? 'none'}`;
+      if (seededKeyRef.current === seedKey) return;
+
+      if (study.studyPathway === 'surgery' && study.surgery.date) {
+        await scheduler.deleteTask(IPSS_TASK_IDS.POST_UDS).catch(() => {});
+        if (!scheduler.getTask(IPSS_TASK_IDS.ONE_MONTH)) {
+          const tasks = createIPSSFollowUpTasks(study.surgery.date);
+          await Promise.all(tasks.map((t) => scheduler.createOrUpdateTask(t)));
+        }
+        await scheduleIPSSNotifications('surgery', study.surgery.date);
+      } else if (study.studyPathway === 'urodynamics' && study.urodynamics.date) {
+        await Promise.all([
+          scheduler.deleteTask(IPSS_TASK_IDS.ONE_MONTH).catch(() => {}),
+          scheduler.deleteTask(IPSS_TASK_IDS.TWO_MONTH).catch(() => {}),
+          scheduler.deleteTask(IPSS_TASK_IDS.THREE_MONTH).catch(() => {}),
+        ]);
+        if (!scheduler.getTask(IPSS_TASK_IDS.POST_UDS)) {
+          const tasks = createIPSSPostUdsTasks(study.urodynamics.date);
+          await Promise.all(tasks.map((t) => scheduler.createOrUpdateTask(t)));
+        }
+        await scheduleIPSSNotifications('uds', study.urodynamics.date);
+      } else {
+        await Promise.all([
+          scheduler.deleteTask(IPSS_TASK_IDS.ONE_MONTH).catch(() => {}),
+          scheduler.deleteTask(IPSS_TASK_IDS.TWO_MONTH).catch(() => {}),
+          scheduler.deleteTask(IPSS_TASK_IDS.THREE_MONTH).catch(() => {}),
+          scheduler.deleteTask(IPSS_TASK_IDS.POST_UDS).catch(() => {}),
+        ]);
+      }
+
+      seededKeyRef.current = seedKey;
     }
 
-    seededRef.current = true;
-
-    const tasks = createIPSSFollowUpTasks(surgeryDate.date);
-    Promise.all(tasks.map((task) => scheduler.createOrUpdateTask(task))).catch((err) => {
+    seed().catch((err) => {
       console.error('[IPSS] Failed to seed follow-up tasks:', err);
-      seededRef.current = false; // allow retry on next render
     });
-  }, [scheduler, surgeryDate.isLoading, surgeryDate.date, surgeryDate.isPlaceholder]);
+  }, [scheduler, study.isLoading, study.studyPathway, study.surgery.date, study.urodynamics.date]);
 }

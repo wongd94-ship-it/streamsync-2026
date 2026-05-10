@@ -19,7 +19,7 @@ import {
   getDoc,
   setDoc,
   serverTimestamp,
-} from "firebase/firestore";
+} from 'firebase/firestore';
 import {db} from "./firebase";
 
 export interface ThroneSession {
@@ -32,6 +32,7 @@ export interface ThroneSession {
   endTs: string;
   deviceId: string;
   userId: string;
+  userEmail?: string | null;
   status: string;
   metricCount: number;
 }
@@ -48,6 +49,15 @@ export interface ThroneMetric {
   value: number | string;
   series: string;
   durationMicros: number;
+}
+
+function normalizeEmailLikeValue(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function looksLikeEmailIdentifier(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value).trim());
 }
 
 /**
@@ -141,6 +151,24 @@ export async function fetchSurgeryDate(uid: string): Promise<string | null> {
 }
 
 /**
+ * Read urodynamics date from users/{uid}/urodynamics_date/current.
+ * Returns an ISO date string (YYYY-MM-DD) or null if not set.
+ */
+export async function fetchUrodynamicsDate(uid: string): Promise<string | null> {
+  try {
+    const snap = await getDoc(doc(db, `users/${uid}/urodynamics_date/current`));
+    if (snap.exists()) {
+      const uds = snap.data()?.urodynamicsDate;
+      if (typeof uds === 'string' && uds) return uds.slice(0, 10);
+      if (uds?.toDate) return (uds.toDate() as Date).toISOString().slice(0, 10);
+    }
+  } catch {
+    // Document may not exist — return null
+  }
+  return null;
+}
+
+/**
  * Persist the Throne User ID to the root users/{uid} document.
  *
  * The syncThroneUserMap Cloud Function trigger watches users/{uid} and
@@ -149,9 +177,76 @@ export async function fetchSurgeryDate(uid: string): Promise<string | null> {
  * the correct user without any manual CRC steps.
  */
 export async function saveThroneUserId(uid: string, throneUserId: string): Promise<void> {
+  const normalizedId = String(throneUserId || '').trim();
+  if (!normalizedId) {
+    throw new Error('Throne User ID is required.');
+  }
+  if (looksLikeEmailIdentifier(normalizedId)) {
+    await saveThroneAccountEmail(uid, normalizedId);
+    throw new Error('Refusing to store an email-shaped value as throneUserId. Save throneAccountEmail instead.');
+  }
   await setDoc(
     doc(db, `users/${uid}`),
-    { throneUserId, throneUserIdSetAt: new Date().toISOString() },
+    { throneUserId: normalizedId, throneUserIdSetAt: new Date().toISOString() },
+    { merge: true },
+  );
+}
+
+/**
+ * Persist the participant's Throne account email separately from throneUserId.
+ */
+export async function saveThroneAccountEmail(uid: string, email: string): Promise<void> {
+  const normalizedEmail = normalizeEmailLikeValue(email);
+  await setDoc(
+    doc(db, `users/${uid}`),
+    { throneAccountEmail: normalizedEmail, updatedAt: new Date().toISOString() },
+    { merge: true },
+  );
+}
+
+// ─── Throne Research Participant Registry ────────────────────────────────────
+
+export interface ThroneResearchParticipant {
+  email: string;
+  throneAccountEmail?: string;
+  firebaseUid: string;
+  enrolledAt: string;           // ISO timestamp
+  throneAccountCreated: boolean;
+  lastSyncAt: string | null;    // ISO timestamp
+}
+
+/**
+ * Register a participant in the throne_research_participants collection.
+ * Keyed by email so the Throne data access roster can be exported by email.
+ * Called during account creation to add the participant to the registry.
+ */
+export async function registerThroneResearchParticipant(
+  email: string,
+  firebaseUid: string,
+): Promise<void> {
+  const normalizedEmail = normalizeEmailLikeValue(email);
+  await setDoc(
+    doc(db, `throne_research_participants/${normalizedEmail}`),
+    {
+      email: normalizedEmail,
+      throneAccountEmail: normalizedEmail,
+      firebaseUid,
+      enrolledAt: new Date().toISOString(),
+      throneAccountCreated: false,
+      lastSyncAt: null,
+    },
+    { merge: true },
+  );
+}
+
+/**
+ * Mark that the participant's Throne account has been linked (data is flowing).
+ */
+export async function markThroneAccountLinked(email: string): Promise<void> {
+  const normalizedEmail = email.toLowerCase().trim();
+  await setDoc(
+    doc(db, `throne_research_participants/${normalizedEmail}`),
+    { throneAccountCreated: true },
     { merge: true },
   );
 }
@@ -162,9 +257,65 @@ export interface UserProfileDocument {
   firstName?: string;
   lastName?: string;
   email?: string;
+  throneAccountEmail?: string;
   phoneNumber?: string;
+  onboardingComplete?: boolean;
+  onboardingCompletedAt?: string;
   updatedAt?: string;
   createdAt?: string;
+}
+
+/**
+ * Cross-device onboarding-complete signal. Writes both the boolean flag
+ * and the completion timestamp to the root user doc so other devices
+ * (or fresh app installs) can detect that this user has already
+ * finished onboarding without having to re-run the flow.
+ */
+export async function markOnboardingCompleteInFirestore(uid: string): Promise<void> {
+  const now = new Date().toISOString();
+  await setDoc(
+    doc(db, `users/${uid}`),
+    { onboardingComplete: true, onboardingCompletedAt: now, updatedAt: now },
+    { merge: true },
+  );
+}
+
+/**
+ * Returns true if Firestore has strong evidence this user has completed
+ * onboarding on a previous device/build. Checked in priority order:
+ *   1. Explicit `onboardingComplete === true` on users/{uid} (new signal).
+ *   2. Presence of all three main onboarding artifacts — consent_response,
+ *      ipss_scores/baseline, and medical_history/current — which together
+ *      indicate the user got through every major step.
+ * Either signal is sufficient.
+ */
+export async function isOnboardingCompleteInFirestore(uid: string): Promise<boolean> {
+  try {
+    // Signal 1: explicit flag.
+    const userSnap = await getDoc(doc(db, `users/${uid}`));
+    if (userSnap.exists() && userSnap.data()?.onboardingComplete === true) {
+      return true;
+    }
+
+    // Signal 2: all three main onboarding artifacts present.
+    const [consentSnap, ipssSnap, mhSnap] = await Promise.all([
+      getDoc(doc(db, `users/${uid}/consent_response/current`)),
+      getDoc(doc(db, `users/${uid}/ipss_scores/baseline`)),
+      getDoc(doc(db, `users/${uid}/medical_history/current`)),
+    ]);
+    return consentSnap.exists() && ipssSnap.exists() && mhSnap.exists();
+  } catch (err) {
+    console.warn('[Onboarding] Firestore check failed:', err);
+    return false;
+  }
+}
+
+export interface StudyTimelineDocument {
+  studyPathway?: 'surgery' | 'uds' | null;
+  anchorDateType?: 'surgery' | 'uds' | null;
+  surgeryDate?: string | null;
+  urodynamicsDate?: string | null;
+  updatedAt?: string;
 }
 
 /**
@@ -190,12 +341,45 @@ export async function saveUserProfile(uid: string, profile: UserProfileDocument)
 }
 
 /**
+ * Persist study pathway metadata to users/{uid}/study_timeline/current.
+ */
+export async function saveStudyTimeline(uid: string, timeline: StudyTimelineDocument): Promise<void> {
+  const payload = Object.fromEntries(
+    Object.entries({
+      ...timeline,
+      updatedAt: timeline.updatedAt ?? new Date().toISOString(),
+    }).filter(([, value]) => value !== undefined),
+  );
+
+  if (Object.keys(payload).length === 0) {
+    return;
+  }
+
+  await setDoc(
+    doc(db, `users/${uid}/study_timeline/current`),
+    payload,
+    { merge: true },
+  );
+}
+
+/**
  * Persist surgery date to users/{uid}/surgery_date/current.
  */
 export async function saveSurgeryDate(uid: string, dateStr: string): Promise<void> {
   await setDoc(
     doc(db, `users/${uid}/surgery_date/current`),
     { surgeryDate: dateStr, updatedAt: new Date().toISOString() },
+    { merge: true },
+  );
+}
+
+/**
+ * Persist urodynamics date to users/{uid}/urodynamics_date/current.
+ */
+export async function saveUrodynamicsDate(uid: string, dateStr: string): Promise<void> {
+  await setDoc(
+    doc(db, `users/${uid}/urodynamics_date/current`),
+    { urodynamicsDate: dateStr, updatedAt: new Date().toISOString() },
     { merge: true },
   );
 }

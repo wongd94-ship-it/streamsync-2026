@@ -43,6 +43,7 @@ interface ThroneSessionRaw {
   endTs: string;
   deviceId: string;
   userId: string;
+  userEmail?: string | null;
   status: string;
   metrics: ThroneMetricRaw[];
 }
@@ -65,6 +66,7 @@ export interface NormalizedSession {
   endTs: string;
   deviceId: string;
   userId: string;
+  userEmail: string | null;
   status: string;
   metricCount: number;
 }
@@ -93,6 +95,19 @@ interface SyncState {
   metricCount: number;
 }
 
+export interface ThroneBackfillResult {
+  email: string;
+  days: number;
+  gtTs: string;
+  ltTs: string;
+  pagesFetched: number;
+  scannedSessionCount: number;
+  matchedSessionCount: number;
+  matchedDoneWithMetricsCount: number;
+  sessionCount: number;
+  metricCount: number;
+}
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 export interface ThroneConfig {
@@ -100,6 +115,82 @@ export interface ThroneConfig {
   baseUrl: string;
   timezone: string;
   studyId: string;
+}
+
+function looksLikeEmailIdentifier(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value).trim());
+}
+
+function normalizeEmailIdentifier(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return looksLikeEmailIdentifier(normalized) ? normalized : null;
+}
+
+function addMapping(map: Map<string, string[]>, key: string | null, firebaseUid: string): void {
+  if (!key) return;
+  const existing = map.get(key) ?? [];
+  if (!existing.includes(firebaseUid)) {
+    existing.push(firebaseUid);
+    map.set(key, existing);
+  }
+}
+
+function maskEmailForLog(email: string | null): string {
+  if (!email) return "(none)";
+  const [local, domain] = email.split("@");
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+async function buildUserMappings(
+  db: admin.firestore.Firestore,
+): Promise<{
+  throneUserIdToFirebase: Map<string, string[]>;
+  emailToFirebase: Map<string, string[]>;
+}> {
+  const usersSnap = await db.collection("users").get();
+
+  const throneUserIdToFirebase = new Map<string, string[]>();
+  const emailToFirebase = new Map<string, string[]>();
+  const batch = db.batch();
+  let migratedEmailShapedIds = 0;
+
+  for (const doc of usersSnap.docs) {
+    const data = doc.data();
+    const rawThroneUserId = typeof data.throneUserId === "string" ? data.throneUserId.trim() : "";
+    const throneAccountEmail = normalizeEmailIdentifier(data.throneAccountEmail);
+    const accountEmail = normalizeEmailIdentifier(data.email);
+
+    addMapping(emailToFirebase, throneAccountEmail, doc.id);
+    addMapping(emailToFirebase, accountEmail, doc.id);
+
+    if (!rawThroneUserId) {
+      continue;
+    }
+
+    if (looksLikeEmailIdentifier(rawThroneUserId)) {
+      const migratedEmail = normalizeEmailIdentifier(rawThroneUserId);
+      migratedEmailShapedIds++;
+      addMapping(emailToFirebase, migratedEmail, doc.id);
+      batch.set(doc.ref, {
+        throneAccountEmail: throneAccountEmail || migratedEmail,
+        throneUserId: admin.firestore.FieldValue.delete(),
+        throneUserIdSetAt: admin.firestore.FieldValue.delete(),
+        updatedAt: new Date().toISOString(),
+      }, {merge: true});
+      continue;
+    }
+
+    addMapping(throneUserIdToFirebase, rawThroneUserId, doc.id);
+  }
+
+  if (migratedEmailShapedIds > 0) {
+    await batch.commit();
+    logger.info(`Migrated ${migratedEmailShapedIds} email-shaped throneUserId value(s) into throneAccountEmail`);
+  }
+
+  return {throneUserIdToFirebase, emailToFirebase};
 }
 
 // ─── API Helpers ─────────────────────────────────────────────────────────────
@@ -168,6 +259,7 @@ function normalizeSessions(
           endTs: s.endTs,
           deviceId: s.deviceId,
           userId: s.userId,
+          userEmail: normalizeEmailIdentifier(s.userEmail),
           status: s.status,
           metricCount: s.metrics.length,
         });
@@ -203,65 +295,85 @@ function normalizeSessions(
 
 const BATCH_LIMIT = 400;
 
+async function getMissingEntries<T extends {id: string}>(
+  db: admin.firestore.Firestore,
+  pathPrefix: string,
+  entries: T[],
+): Promise<T[]> {
+  const missing: T[] = [];
+
+  for (let i = 0; i < entries.length; i += BATCH_LIMIT) {
+    const chunk = entries.slice(i, i + BATCH_LIMIT);
+    const refs = chunk.map((entry) => db.doc(`${pathPrefix}/${entry.id}`));
+    const snaps = await db.getAll(...refs);
+    snaps.forEach((snap, index) => {
+      if (!snap.exists) {
+        missing.push(chunk[index]);
+      }
+    });
+  }
+
+  return missing;
+}
+
 async function writeToFirestore(
   db: admin.firestore.Firestore,
   sessions: NormalizedSession[],
   metrics: NormalizedMetric[],
-): Promise<void> {
-  // Group sessions by Throne userId
-  const sessionsByThroneUser = new Map<string, NormalizedSession[]>();
-  for (const s of sessions) {
-    const arr = sessionsByThroneUser.get(s.userId) ?? [];
-    arr.push(s);
-    sessionsByThroneUser.set(s.userId, arr);
-  }
+): Promise<{sessionCount: number; metricCount: number}> {
+  let writtenSessionCount = 0;
+  let writtenMetricCount = 0;
 
-  // Build sessionId → throneUserId index for routing metrics to the right user
-  const sessionThroneUser = new Map<string, string>();
-  for (const s of sessions) {
-    sessionThroneUser.set(s.id, s.userId);
-  }
-
-  // Group metrics by Throne userId
-  const metricsByThroneUser = new Map<string, NormalizedMetric[]>();
+  const metricsBySessionId = new Map<string, NormalizedMetric[]>();
   for (const m of metrics) {
-    const throneUserId = sessionThroneUser.get(m.sessionId);
-    if (!throneUserId) continue; // orphaned metric — skip
-    const arr = metricsByThroneUser.get(throneUserId) ?? [];
+    const arr = metricsBySessionId.get(m.sessionId) ?? [];
     arr.push(m);
-    metricsByThroneUser.set(throneUserId, arr);
+    metricsBySessionId.set(m.sessionId, arr);
   }
 
-  // Build throneUserId → firebaseUid[] map. Supports multiple Firebase accounts
-  // sharing the same Throne ID (e.g. during testing), writing data to all of them.
-  const usersSnap = await db.collection("users")
-    .where("throneUserId", "!=", null)
-    .get();
-  const throneToFirebase = new Map<string, string[]>();
-  for (const doc of usersSnap.docs) {
-    const tid = doc.data().throneUserId as string | undefined;
-    if (tid) {
-      const existing = throneToFirebase.get(tid) ?? [];
-      existing.push(doc.id);
-      throneToFirebase.set(tid, existing);
-    }
-  }
-  logger.info("Throne→Firebase mappings found: " + throneToFirebase.size);
+  // Build lookup maps. Email is now the preferred Throne/Firebase join key;
+  // throneUserId remains as a fallback for legacy manually-linked accounts.
+  const {throneUserIdToFirebase, emailToFirebase} = await buildUserMappings(db);
+  logger.info(
+    "Throne→Firebase mappings found: " +
+    `${emailToFirebase.size} email(s), ${throneUserIdToFirebase.size} Throne userId(s)`,
+  );
 
-  // For each Throne userId, write to all mapped Firebase UIDs
-  for (const [throneUserId, userSessions] of sessionsByThroneUser) {
-    const firebaseUids = throneToFirebase.get(throneUserId);
+  const sessionsByFirebaseUid = new Map<string, NormalizedSession[]>();
+  const metricsByFirebaseUid = new Map<string, NormalizedMetric[]>();
 
-    if (!firebaseUids || firebaseUids.length === 0) {
+  for (const session of sessions) {
+    const firebaseUids = session.userEmail ?
+      emailToFirebase.get(session.userEmail) :
+      undefined;
+    const fallbackFirebaseUids = !firebaseUids?.length ?
+      throneUserIdToFirebase.get(session.userId) :
+      undefined;
+    const resolvedFirebaseUids = firebaseUids?.length ? firebaseUids : fallbackFirebaseUids;
+
+    if (!resolvedFirebaseUids || resolvedFirebaseUids.length === 0) {
       logger.warn(
-        "No users/{uid}.throneUserId match for throneUserId=" + throneUserId +
-        " — skipping " + userSessions.length + " session(s)." +
-        " Have the participant enter their Throne User ID in the app.",
+        "No Firebase user match for Throne session. " +
+        `userEmail=${maskEmailForLog(session.userEmail)}, throneUserId=${session.userId}; ` +
+        "skipping 1 session.",
       );
       continue;
     }
 
-    const userMetrics = metricsByThroneUser.get(throneUserId) ?? [];
+    const sessionMetrics = metricsBySessionId.get(session.id) ?? [];
+    for (const firebaseUid of resolvedFirebaseUids) {
+      const userSessions = sessionsByFirebaseUid.get(firebaseUid) ?? [];
+      userSessions.push(session);
+      sessionsByFirebaseUid.set(firebaseUid, userSessions);
+
+      const userMetrics = metricsByFirebaseUid.get(firebaseUid) ?? [];
+      userMetrics.push(...sessionMetrics);
+      metricsByFirebaseUid.set(firebaseUid, userMetrics);
+    }
+  }
+
+  for (const [firebaseUid, userSessions] of sessionsByFirebaseUid) {
+    const userMetrics = metricsByFirebaseUid.get(firebaseUid) ?? [];
     const latestVoidAt = userSessions.reduce<string | null>((latest, session) => {
       if (!session.startTs) return latest;
       if (!latest) return session.startTs;
@@ -270,50 +382,66 @@ async function writeToFirestore(
         latest;
     }, null);
 
-    for (const firebaseUid of firebaseUids) {
-      // Write sessions in batches
-      for (let i = 0; i < userSessions.length; i += BATCH_LIMIT) {
-        const batch = db.batch();
-        for (const s of userSessions.slice(i, i + BATCH_LIMIT)) {
-          batch.set(
-            db.collection(`users/${firebaseUid}/throne_sessions`).doc(s.id),
-            s,
-            {merge: true},
-          );
-        }
-        await batch.commit();
-        logger.info(`Wrote sessions batch for uid=${firebaseUid}`);
+    const missingSessions = await getMissingEntries(
+      db,
+      `users/${firebaseUid}/throne_sessions`,
+      userSessions,
+    );
+    const missingMetrics = await getMissingEntries(
+      db,
+      `users/${firebaseUid}/throne_metrics`,
+      userMetrics,
+    );
+    writtenSessionCount += missingSessions.length;
+    writtenMetricCount += missingMetrics.length;
+
+    // Write sessions in batches
+    for (let i = 0; i < missingSessions.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const s of missingSessions.slice(i, i + BATCH_LIMIT)) {
+        batch.set(
+          db.collection(`users/${firebaseUid}/throne_sessions`).doc(s.id),
+          s,
+        );
       }
-
-      // Write metrics in batches
-      for (let i = 0; i < userMetrics.length; i += BATCH_LIMIT) {
-        const batch = db.batch();
-        for (const m of userMetrics.slice(i, i + BATCH_LIMIT)) {
-          batch.set(
-            db.collection(`users/${firebaseUid}/throne_metrics`).doc(m.id),
-            m,
-            {merge: true},
-          );
-        }
-        await batch.commit();
-        logger.info(`Wrote metrics batch for uid=${firebaseUid}`);
-      }
-
-      // Write per-user sync state
-      await db.doc(`users/${firebaseUid}/throne_sync/state`).set({
-        lastRunAt: new Date().toISOString(),
-        lastVoidAt: latestVoidAt,
-        lastStatus: "success",
-        sessionCount: userSessions.length,
-        metricCount: userMetrics.length,
-      }, {merge: true});
-
-      logger.info(
-        `Ingestion complete for uid=${firebaseUid}: ` +
-        `${userSessions.length} sessions, ${userMetrics.length} metrics`,
-      );
+      await batch.commit();
+      logger.info(`Wrote sessions batch for uid=${firebaseUid}`);
     }
+
+    // Write metrics in batches
+    for (let i = 0; i < missingMetrics.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const m of missingMetrics.slice(i, i + BATCH_LIMIT)) {
+        batch.set(
+          db.collection(`users/${firebaseUid}/throne_metrics`).doc(m.id),
+          m,
+        );
+      }
+      await batch.commit();
+      logger.info(`Wrote metrics batch for uid=${firebaseUid}`);
+    }
+
+    // Write per-user sync state
+    await db.doc(`users/${firebaseUid}/throne_sync/state`).set({
+      lastRunAt: new Date().toISOString(),
+      lastVoidAt: latestVoidAt,
+      lastStatus: "success",
+      sessionCount: missingSessions.length,
+      metricCount: missingMetrics.length,
+      seenSessionCount: userSessions.length,
+      seenMetricCount: userMetrics.length,
+    }, {merge: true});
+
+    logger.info(
+      `Ingestion complete for uid=${firebaseUid}: ` +
+      `${missingSessions.length} new sessions, ${missingMetrics.length} new metrics`,
+    );
   }
+
+  return {
+    sessionCount: writtenSessionCount,
+    metricCount: writtenMetricCount,
+  };
 }
 
 // ─── Main Ingestion Logic ────────────────────────────────────────────────────
@@ -370,9 +498,9 @@ export async function runThroneIngestion(
   logger.info(`Normalized: ${sessions.length} sessions, ${metrics.length} metrics`);
 
   // Write to user-scoped paths
-  if (sessions.length > 0 || metrics.length > 0) {
-    await writeToFirestore(db, sessions, metrics);
-  }
+  const writeResult = (sessions.length > 0 || metrics.length > 0) ?
+    await writeToFirestore(db, sessions, metrics) :
+    {sessionCount: 0, metricCount: 0};
 
   // Advance study-level sync cursor
   const syncState: SyncState = {
@@ -380,10 +508,112 @@ export async function runThroneIngestion(
     lastLtTs: ltTs,
     lastStatus: "success",
     lastError: null,
-    sessionCount: sessions.length,
-    metricCount: metrics.length,
+    sessionCount: writeResult.sessionCount,
+    metricCount: writeResult.metricCount,
   };
   await syncRef.set(syncState, {merge: true});
 
-  return {sessionCount: sessions.length, metricCount: metrics.length};
+  return {sessionCount: writeResult.sessionCount, metricCount: writeResult.metricCount};
+}
+
+export async function runThroneBackfillForEmail(
+  config: ThroneConfig,
+  email: string,
+  opts?: {days?: number; ltTs?: string},
+): Promise<ThroneBackfillResult> {
+  const normalizedEmail = normalizeEmailIdentifier(email);
+  if (!normalizedEmail) {
+    throw new Error("email must be a valid address");
+  }
+
+  const days = Math.min(Math.max(Math.floor(opts?.days ?? 180), 1), 365);
+  const ltDate = opts?.ltTs ? new Date(opts.ltTs) : new Date();
+  if (Number.isNaN(ltDate.getTime())) {
+    throw new Error("ltTs must be a valid ISO date when provided");
+  }
+  const gtDate = new Date(ltDate.getTime() - days * 24 * 60 * 60 * 1000);
+
+  const matchedPages: ExportResponse[] = [];
+  let pagesFetched = 0;
+  let scannedSessionCount = 0;
+  let matchedSessionCount = 0;
+  let matchedDoneWithMetricsCount = 0;
+
+  for (let day = days; day > 0; day--) {
+    const windowStart = new Date(ltDate.getTime() - day * 24 * 60 * 60 * 1000);
+    const windowEnd = new Date(ltDate.getTime() - (day - 1) * 24 * 60 * 60 * 1000);
+    let page = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const data = await fetchExportPage(
+        config,
+        page,
+        windowStart.toISOString(),
+        windowEnd.toISOString(),
+      );
+      pagesFetched++;
+      scannedSessionCount += data.sessions.length;
+
+      const matchedSessions = data.sessions.filter((session) =>
+        normalizeEmailIdentifier(session.userEmail) === normalizedEmail,
+      );
+      if (matchedSessions.length > 0) {
+        matchedSessionCount += matchedSessions.length;
+        matchedDoneWithMetricsCount += matchedSessions.filter((session) =>
+          session.status === "DONE" &&
+          Array.isArray(session.metrics) &&
+          session.metrics.length > 0,
+        ).length;
+        matchedPages.push({
+          ...data,
+          sessions: matchedSessions,
+          count: matchedSessions.length,
+          hasMore: false,
+        });
+      }
+
+      hasMore = data.hasMore;
+      page++;
+      if (page > 100) {
+        throw new Error(
+          `Throne backfill exceeded 100 pages for ${windowStart.toISOString()} to ${windowEnd.toISOString()}`,
+        );
+      }
+    }
+  }
+
+  const db = admin.firestore();
+  const {sessions, metrics} = normalizeSessions(matchedPages, config.studyId);
+  const writeResult = (sessions.length > 0 || metrics.length > 0) ?
+    await writeToFirestore(db, sessions, metrics) :
+    {sessionCount: 0, metricCount: 0};
+
+  await db.collection("throne_research_participants").doc(normalizedEmail).set({
+    lastSyncAt: new Date().toISOString(),
+    lastBackfillAt: new Date().toISOString(),
+    lastBackfillDays: days,
+    lastBackfillMatchedSessions: matchedSessionCount,
+    lastBackfillMatchedDoneWithMetrics: matchedDoneWithMetricsCount,
+  }, {merge: true});
+
+  logger.info("Throne email backfill complete", {
+    email: maskEmailForLog(normalizedEmail),
+    days,
+    matchedSessionCount,
+    matchedDoneWithMetricsCount,
+    ...writeResult,
+  });
+
+  return {
+    email: normalizedEmail,
+    days,
+    gtTs: gtDate.toISOString(),
+    ltTs: ltDate.toISOString(),
+    pagesFetched,
+    scannedSessionCount,
+    matchedSessionCount,
+    matchedDoneWithMetricsCount,
+    ...writeResult,
+  };
 }

@@ -36,11 +36,33 @@ const firebaseConfig = {
   appId: fromEnv('EXPO_PUBLIC_FIREBASE_APP_ID', DEFAULT_FIREBASE_CONFIG.appId),
 };
 
-const existingApps = getApps();
-const app = existingApps.length === 0 ? initializeApp(firebaseConfig) : getApp();
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-export const auth = existingApps.length === 0
-  ? initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) })
-  : getAuth(app);
+// Auth persistence — MUST be initialized with getReactNativePersistence so
+// the session survives force-quit. The previous "only initializeAuth on
+// first-app-init" pattern was racing with src/services/firebase.ts which
+// calls initializeApp earlier: by the time lib/firebase.ts evaluated,
+// getApps().length was already 1, we'd skip initializeAuth, and Firebase
+// Auth would auto-initialize with default in-memory persistence on the
+// first getAuth() call. Sessions then vanished on app relaunch.
+//
+// The correct pattern is to always call initializeAuth; it throws if
+// already initialized (e.g. Fast Refresh in dev), in which case we fall
+// back to getAuth to retrieve the existing instance (which by then has
+// whatever persistence the first initializeAuth set).
+function initializeAuthWithPersistence() {
+  try {
+    return initializeAuth(app, {
+      persistence: getReactNativePersistence(AsyncStorage),
+    });
+  } catch (err) {
+    // Typically "already-initialized-auth" from a hot reload. Use the
+    // existing instance — its persistence was set by the first call.
+    console.info('[Firebase] initializeAuth already done, reusing existing instance.');
+    return getAuth(app);
+  }
+}
+
+export const auth = initializeAuthWithPersistence();
 
 export default app;

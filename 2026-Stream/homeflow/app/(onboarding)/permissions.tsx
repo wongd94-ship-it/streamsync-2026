@@ -1,8 +1,9 @@
 /**
  * Permissions Screen
  *
- * Request HealthKit and Throne permissions.
- * HealthKit is required, Throne is optional.
+ * Requests HealthKit, Clinical Records (Apple Health),
+ * and Notifications. HealthKit and Notifications are required.
+ * Throne setup happens post-onboarding (device ships separately).
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -15,14 +16,8 @@ import {
   Platform,
   Alert,
   Linking,
-  Modal,
-  TextInput,
-  KeyboardAvoidingView,
-  Pressable,
-  TouchableOpacity,
-  ActivityIndicator,
 } from 'react-native';
-import { useRouter, Href, useFocusEffect } from 'expo-router';
+import { useRouter, Href } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, StanfordColors, Spacing } from '@/constants/theme';
 import { OnboardingStep } from '@/lib/constants';
@@ -33,7 +28,12 @@ import {
   requestClinicalPermissions,
   requestHealthPermissions,
 } from '@/lib/services/healthkit';
-import { requestNotificationPermissions } from '@/lib/services/notification-service';
+import { syncFhirPrefill } from '@/src/services/fhirPrefillSync';
+import { syncClinicalNotes } from '@/src/services/clinicalNotesSync';
+import {
+  requestNotificationPermissions,
+  getNotificationPermissionStatus,
+} from '@/lib/services/notification-service';
 import {
   OnboardingProgressBar,
   PermissionCard,
@@ -41,32 +41,22 @@ import {
   PermissionStatus,
 } from '@/components/onboarding';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useAuth } from '@/lib/auth/auth-context';
-import { getConnectedSmartProviderStatus } from '@/lib/services/smart';
-import type { SmartHealthSystem } from '@/lib/services/smart';
-import { saveThroneUserId } from '@/src/services/throneFirestore';
-import { getAuth } from '@/src/services/firestore';
 
 export default function PermissionsScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
   const colors = Colors[colorScheme ?? 'light'];
-  const { user } = useAuth();
 
   const [healthKitStatus, setHealthKitStatus] = useState<PermissionStatus>('not_determined');
   const [clinicalStatus, setClinicalStatus] = useState<PermissionStatus>('not_determined');
   const [throneStatus, setThroneStatus] = useState<PermissionStatus>('not_determined');
-  const [smartProviderStatus, setSmartProviderStatus] = useState<PermissionStatus>('not_determined');
+  const [notificationsStatus, setNotificationsStatus] = useState<PermissionStatus>('not_determined');
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<SmartHealthSystem | null>(null);
-  // Throne User ID modal state
-  const [throneModalVisible, setThroneModalVisible] = useState(false);
-  const [throneIdInput, setThroneIdInput] = useState('');
-  const [throneIdSaving, setThroneIdSaving] = useState(false);
 
-  // HealthKit is required, Throne is optional
-  const canContinue = healthKitStatus === 'granted' || Platform.OS !== 'ios';
+  // HealthKit and Notifications are required (on iOS)
+  const healthKitOk = healthKitStatus === 'granted' || Platform.OS !== 'ios';
+  const notificationsOk = notificationsStatus === 'granted' || Platform.OS !== 'ios';
+  const canContinue = healthKitOk && notificationsOk;
 
   useEffect(() => {
     let cancelled = false;
@@ -74,56 +64,17 @@ export default function PermissionsScreen() {
       const thronePermission = await ThroneService.getPermissionStatus();
       if (!cancelled) setThroneStatus(thronePermission);
 
+      const notifStatus = await getNotificationPermissionStatus();
+      if (!cancelled) setNotificationsStatus(notifStatus);
+
       const onboardingData = await OnboardingService.getData();
       if (!cancelled && onboardingData.permissions?.clinicalRecords) {
         setClinicalStatus(onboardingData.permissions.clinicalRecords);
-      }
-      const providerConnection = onboardingData.providerConnection;
-      if (!cancelled && providerConnection) {
-        setSelectedProvider({
-          id: providerConnection.providerId,
-          name: providerConnection.providerName,
-          issuer: providerConnection.issuer,
-          fhirBaseUrl: providerConnection.fhirBaseUrl,
-          vendor: 'epic',
-          authorizationStyle: 'standalone_patient',
-        });
-        setSmartProviderStatus('granted');
       }
     }
     checkStatus();
     return () => { cancelled = true; };
   }, []);
-
-  // Re-check SMART connection status each time this screen regains focus
-  // (i.e. the participant returns from the smart-connect modal).
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      async function checkProviderConnection() {
-        const uid = getAuth().currentUser?.uid;
-        if (!uid) return;
-        try {
-          const connection = await getConnectedSmartProviderStatus(uid);
-          if (cancelled) return;
-          if (connection) {
-            setSelectedProvider((prev) => prev ?? {
-              id: connection.providerId,
-              name: connection.providerName,
-              issuer: connection.issuer,
-              fhirBaseUrl: connection.fhirBaseUrl,
-              vendor: connection.providerId === 'epic-sandbox' ? 'epic' as const : 'other' as const,
-            });
-            setSmartProviderStatus('granted');
-          }
-        } catch {
-          // Ignore silently — connection status just stays unchanged
-        }
-      }
-      checkProviderConnection();
-      return () => { cancelled = true; };
-    }, []),
-  );
 
   const handleHealthKitRequest = useCallback(async () => {
     if (Platform.OS !== 'ios') {
@@ -193,7 +144,17 @@ export default function PermissionsScreen() {
       const result = await requestClinicalPermissions();
       setClinicalStatus(result.success ? 'granted' : 'denied');
 
-      if (!result.success) {
+      if (result.success) {
+        // Kick off sync immediately so the medical-history screen can read
+        // fresh HealthKit clinical records from Firestore. Fire-and-forget —
+        // we don't want to block the permissions UI on the sync.
+        syncFhirPrefill().catch((err) =>
+          console.warn('[Permissions] post-auth FHIR prefill sync error:', err),
+        );
+        syncClinicalNotes().catch((err) =>
+          console.warn('[Permissions] post-auth clinical notes sync error:', err),
+        );
+      } else {
         Alert.alert(
           'Clinical Records Access',
           'Clinical records access was not granted. You can enable it later in Settings or continue without it.',
@@ -213,70 +174,39 @@ export default function PermissionsScreen() {
     setClinicalStatus('skipped');
   }, []);
 
-  const handleSmartProviderRequest = useCallback(() => {
-    router.push('/smart-connect' as Href);
-  }, [router]);
+  // Throne setup moved post-onboarding — device ships separately via mail
+  // and is linked to the user automatically by matching email. See
+  // app/throne-setup-guide.tsx for the post-arrival in-app setup flow.
 
-  const handleSmartProviderSkip = useCallback(() => {
-    setSmartProviderStatus('skipped');
-  }, []);
-
-  // Opens the Throne User ID modal instead of immediately calling the service
-  const handleThroneRequest = useCallback(() => {
-    setThroneIdInput('');
-    setThroneModalVisible(true);
-  }, []);
-
-  // Called when the user confirms their Throne User ID in the modal
-  const handleThroneIdConfirm = useCallback(async () => {
-    const trimmed = throneIdInput.trim();
-    if (!trimmed) return;
-
-    setThroneIdSaving(true);
+  const handleNotificationsRequest = useCallback(async () => {
     try {
-      const uid = user?.id;
-      if (uid) {
-        // SHORT-TERM: User manually enters their Throne User ID (found in the
-        // Throne app under Profile → Account). We persist it here so the
-        // syncThroneUserMap Cloud Function trigger automatically creates the
-        // throneUserMap reverse-lookup entry for data ingestion.
-        await saveThroneUserId(uid, trimmed);
+      const granted = await requestNotificationPermissions();
+      setNotificationsStatus(granted ? 'granted' : 'denied');
+      if (!granted) {
+        Alert.alert(
+          'Notifications Disabled',
+          'Notifications are required so we can remind you about surveys and Throne setup. You can enable them in Settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ],
+        );
       }
-
-      // LONG-TERM (uncomment when real Throne SDK is available):
-      // The OAuth flow will return the throneUserId automatically — no manual
-      // entry needed. Replace the saveThroneUserId call above with:
-      //
-      // const throneResult = await ThroneSDK.authorize({ studyId: THRONE_STUDY_ID });
-      // if (uid) await saveThroneUserId(uid, throneResult.userId);
-
-      await ThroneService.requestPermission();
-      setThroneStatus('granted');
-      setThroneModalVisible(false);
     } catch {
-      Alert.alert('Error', 'Failed to save Throne User ID. Please try again.');
-    } finally {
-      setThroneIdSaving(false);
+      Alert.alert('Error', 'Failed to request notification permissions. Please try again.');
     }
-  }, [throneIdInput, user?.id]);
-
-  const handleThroneSkip = useCallback(async () => {
-    await ThroneService.skipSetup();
-    setThroneStatus('skipped');
   }, []);
 
   const handleContinue = async () => {
     setIsLoading(true);
     try {
-      // Request notification permissions alongside health permissions
-      await requestNotificationPermissions();
-
       await OnboardingService.updateData({
         permissions: {
           healthKit: healthKitStatus as 'granted' | 'denied' | 'not_determined',
           clinicalRecords: clinicalStatus as 'granted' | 'denied' | 'not_determined' | 'skipped',
           throne: throneStatus as 'granted' | 'denied' | 'not_determined' | 'skipped',
-          smartProvider: smartProviderStatus as 'granted' | 'denied' | 'not_determined' | 'skipped',
+          smartProvider: 'skipped',
+          notifications: notificationsStatus as 'granted' | 'denied' | 'not_determined',
         },
       });
       await OnboardingService.goToStep(OnboardingStep.MEDICAL_HISTORY);
@@ -305,7 +235,7 @@ export default function PermissionsScreen() {
 
         <Text style={[styles.description, { color: colors.icon }]}>
           StreamSync needs access to your health data to track your activity, sleep, and symptoms.
-          If you want to import clinical records, connect your health records below.
+          Apple Health Clinical Records can also import medications, procedures, conditions, and notes when they are available on your device.
           Your data is encrypted and only used for research purposes.
         </Text>
 
@@ -317,6 +247,15 @@ export default function PermissionsScreen() {
           onRequest={handleHealthKitRequest}
         />
 
+        <PermissionCard
+          title="Notifications"
+          description="Receive reminders for follow-up surveys, Throne setup, and when data stops syncing. Required so we can reach you during the study."
+          icon="bell.fill"
+          status={notificationsStatus}
+          onRequest={handleNotificationsRequest}
+          controlStyle="toggle"
+        />
+
         {Platform.OS === 'ios' && (
           <PermissionCard
             title="Apple Health Clinical Records"
@@ -326,32 +265,10 @@ export default function PermissionsScreen() {
             onRequest={handleClinicalRecordsRequest}
             onSkip={handleClinicalRecordsSkip}
             optional
+            footerLinkLabel="View Privacy Policy"
+            onFooterLinkPress={() => router.push('/privacy-policy' as Href)}
           />
         )}
-
-        <PermissionCard
-          title="Connect Health Records"
-          description={
-            selectedProvider
-              ? `Connected to ${selectedProvider.name}. Your conditions, medications, and visit notes will be imported to prefill your medical history.`
-              : 'Connect your patient portal to automatically import your medical history, medications, and conditions, reducing manual entry on the next screen.'
-          }
-          icon="building.columns.fill"
-          status={smartProviderStatus}
-          onRequest={handleSmartProviderRequest}
-          onSkip={handleSmartProviderSkip}
-          optional
-        />
-
-        <PermissionCard
-          title="Throne Uroflow"
-          description="Connect your Throne device to track voiding patterns and flow measurements. You'll need your Throne User ID from the Throne app."
-          icon="drop.fill"
-          status={throneStatus}
-          onRequest={handleThroneRequest}
-          onSkip={handleThroneSkip}
-          optional
-        />
 
         <View
           style={[
@@ -370,7 +287,11 @@ export default function PermissionsScreen() {
       <View style={styles.footer}>
         {!canContinue && (
           <Text style={[styles.footerHint, { color: colors.icon }]}>
-            Apple Health access is required to continue
+            {!healthKitOk && !notificationsOk
+              ? 'Apple Health and Notifications access are required to continue'
+              : !healthKitOk
+              ? 'Apple Health access is required to continue'
+              : 'Notifications access is required to continue'}
           </Text>
         )}
         <ContinueButton
@@ -381,83 +302,6 @@ export default function PermissionsScreen() {
         />
       </View>
 
-      {/* Throne User ID Modal */}
-      <Modal
-        visible={throneModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setThroneModalVisible(false)}
-      >
-        <Pressable
-          style={modalStyles.backdrop}
-          onPress={() => setThroneModalVisible(false)}
-        >
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          >
-            <Pressable style={[modalStyles.sheet, { backgroundColor: isDark ? '#1C1C1E' : '#FFFFFF' }]}>
-              <View style={[modalStyles.handle, { backgroundColor: isDark ? '#3A3A3C' : '#E5E5EA' }]} />
-
-              <View style={modalStyles.iconRow}>
-                <IconSymbol name="drop.fill" size={28} color={StanfordColors.cardinal} />
-              </View>
-
-              <Text style={[modalStyles.title, { color: colors.text }]}>
-                Connect Throne Device
-              </Text>
-              <Text style={[modalStyles.body, { color: colors.icon }]}>
-                Enter your Throne User ID. You can find this in the Throne app under{' '}
-                <Text style={{ fontWeight: '600' }}>Profile → Account → User ID</Text>.
-              </Text>
-
-              <TextInput
-                style={[
-                  modalStyles.input,
-                  {
-                    color: colors.text,
-                    borderColor: isDark ? '#3A3A3C' : '#E5E5EA',
-                    backgroundColor: isDark ? '#2C2C2E' : '#F2F2F7',
-                  },
-                ]}
-                placeholder="e.g. usr_abc123xyz"
-                placeholderTextColor={colors.icon}
-                value={throneIdInput}
-                onChangeText={setThroneIdInput}
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="done"
-                onSubmitEditing={handleThroneIdConfirm}
-              />
-
-              <TouchableOpacity
-                style={[
-                  modalStyles.confirmButton,
-                  { backgroundColor: throneIdInput.trim() ? StanfordColors.cardinal : (isDark ? '#3A3A3C' : '#E5E5EA') },
-                ]}
-                onPress={handleThroneIdConfirm}
-                disabled={!throneIdInput.trim() || throneIdSaving}
-                activeOpacity={0.8}
-              >
-                {throneIdSaving ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={[modalStyles.confirmText, { color: throneIdInput.trim() ? '#FFFFFF' : colors.icon }]}>
-                    Connect
-                  </Text>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={modalStyles.cancelButton}
-                onPress={() => setThroneModalVisible(false)}
-                disabled={throneIdSaving}
-              >
-                <Text style={[modalStyles.cancelText, { color: colors.icon }]}>Cancel</Text>
-              </TouchableOpacity>
-            </Pressable>
-          </KeyboardAvoidingView>
-        </Pressable>
-      </Modal>
     </SafeAreaView>
   );
 }

@@ -595,14 +595,16 @@ export default function VoidingScreen() {
       try {
         const startDate = new Date(Date.now() - NINETY_DAYS_MS);
         if (!uid) return;
-        const data = await fetchSessions(DEMO_THRONE_UID, { startDate });
+        // Fetch this user's own throne data — was previously hardcoded to
+        // DEMO_THRONE_UID and every user saw the demo account's voids.
+        const data = await fetchSessions(uid, { startDate });
         if (cancelled) return;
         setAllSessions(data);
 
         // Batch-fetch metrics for all sessions
         if (data.length > 0) {
           const ids = data.map(s => s.id);
-          const metrics = await fetchMetricsBatch(DEMO_THRONE_UID, ids);
+          const metrics = await fetchMetricsBatch(uid, ids);
           if (cancelled) return;
 
           // Build a Map: sessionId → ThroneMetric[]
@@ -1068,7 +1070,7 @@ const chipStyles = StyleSheet.create({
 const styles = StyleSheet.create({
   container:     { flex: 1 },
   centered:      { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
-  list:          { paddingHorizontal: 16, paddingBottom: 40 },
+  list:          { paddingHorizontal: 16, paddingBottom: 120 },
   emptyState:    { paddingTop: 24, alignItems: 'center' },
 
   header:        { fontSize: FontSize.display, fontWeight: FontWeight.bold, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },

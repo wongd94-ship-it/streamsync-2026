@@ -43,6 +43,7 @@ module.exports = {
     },
     plugins: [
       "expo-router",
+      "expo-background-task",
       [
         "expo-splash-screen",
         {
@@ -70,6 +71,13 @@ module.exports = {
           "NSHealthShareUsageDescription": "This app needs access to your health data to display your health metrics and track your progress.",
           "NSHealthUpdateUsageDescription": "This app needs permission to save health data to track your activities.",
           "background": true
+        }
+      ],
+      [
+        "./plugins/withClinicalRecords",
+        {
+          usageDescription:
+            "StreamSync would like to access your clinical health records to import medications, lab results, conditions, and clinical notes."
         }
       ],
       [

@@ -38,6 +38,13 @@ export default function OnboardingLayout() {
         }}
       />
       <Stack.Screen
+        name="sign-in"
+        options={{
+          animation: 'slide_from_right',
+          gestureEnabled: true,
+        }}
+      />
+      <Stack.Screen
         name="chat"
         options={{
           animation: 'slide_from_right',
