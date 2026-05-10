@@ -14,20 +14,29 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  * Firebase config is read from EXPO_PUBLIC_FIREBASE_* env vars at build time.
  * No hardcoded fallbacks — a missing var fails the build loudly so we never
  * accidentally ship the literal-string default that was previously checked in
- * (see git history pre-2026-05-10 for the deletion). Local dev: copy
- * .env.example → .env and fill in your Firebase Web SDK config from
- * https://console.firebase.google.com/project/<project-id>/settings/general.
+ * (see git history pre-2026-05-10 for the deletion).
  *
- * Even though Google documents Web SDK config as "not strictly secret"
- * (security comes from referrer/bundle-id restrictions + Firestore rules),
- * we keep the key out of source so:
- *   1. We can rotate it without touching the codebase.
- *   2. Different deployment environments (dev / staging / prod) can use
- *      different keys with different restrictions.
- *   3. Forks of the public repo don't ship our specific project config.
+ * IMPORTANT: each env var MUST be accessed as a STATIC property of
+ * `process.env` (dot notation with the literal name baked into source).
+ * Metro/Babel inline EXPO_PUBLIC_* vars at bundle time but ONLY when the
+ * access is statically analyzable — `process.env[someVariable]` is NOT
+ * inlined and evaluates to undefined at runtime. The earlier refactor of
+ * this file used a `requireEnv(name)` helper with dynamic key access,
+ * which silently broke env loading; that's why every field below is
+ * inlined as its own statement.
+ *
+ * Local dev: copy .env.example → .env and fill in your Firebase Web SDK
+ * config from console.firebase.google.com → Project settings → General →
+ * Your apps → Firebase SDK snippet (Config).
  */
-function requireEnv(name: string): string {
-  const value = process.env[name];
+const apiKey = process.env.EXPO_PUBLIC_FIREBASE_API_KEY;
+const authDomain = process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN;
+const projectId = process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID;
+const storageBucket = process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET;
+const messagingSenderId = process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
+const appId = process.env.EXPO_PUBLIC_FIREBASE_APP_ID;
+
+function assertConfigured(name: string, value: string | undefined): string {
   if (!value || value.startsWith('YOUR_FIREBASE_')) {
     throw new Error(
       `[Firebase] Missing required env var "${name}". ` +
@@ -40,12 +49,12 @@ function requireEnv(name: string): string {
 }
 
 const firebaseConfig = {
-  apiKey: requireEnv('EXPO_PUBLIC_FIREBASE_API_KEY'),
-  authDomain: requireEnv('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN'),
-  projectId: requireEnv('EXPO_PUBLIC_FIREBASE_PROJECT_ID'),
-  storageBucket: requireEnv('EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET'),
-  messagingSenderId: requireEnv('EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID'),
-  appId: requireEnv('EXPO_PUBLIC_FIREBASE_APP_ID'),
+  apiKey: assertConfigured('EXPO_PUBLIC_FIREBASE_API_KEY', apiKey),
+  authDomain: assertConfigured('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN', authDomain),
+  projectId: assertConfigured('EXPO_PUBLIC_FIREBASE_PROJECT_ID', projectId),
+  storageBucket: assertConfigured('EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET', storageBucket),
+  messagingSenderId: assertConfigured('EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID', messagingSenderId),
+  appId: assertConfigured('EXPO_PUBLIC_FIREBASE_APP_ID', appId),
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
