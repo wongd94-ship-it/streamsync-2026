@@ -602,6 +602,13 @@ input, textarea { -webkit-user-select: text; user-select: text; }
             <span id="det-age-inline">Age --</span>
             <span id="det-phone">Phone --</span>
             <span id="det-email">Email --</span>
+            <span id="det-throne-email-wrap" style="display:none">
+              <span id="det-throne-email" title="Email Throne returns on session exports">Throne: --</span>
+              <button type="button" id="det-throne-email-edit" onclick="openSetThroneEmailDialog()" style="margin-left:6px;font-size:11px;background:transparent;border:1px solid rgba(255,255,255,0.18);color:var(--text2);padding:2px 8px;border-radius:6px;cursor:pointer">Edit</button>
+            </span>
+            <span id="det-throne-email-add-wrap">
+              <button type="button" id="det-throne-email-add" onclick="openSetThroneEmailDialog()" style="font-size:11px;background:transparent;border:1px dashed rgba(255,255,255,0.2);color:var(--text2);padding:2px 8px;border-radius:6px;cursor:pointer">+ Throne signup email</button>
+            </span>
           </div>
           <div class="hero-tags">
             <span class="badge badge-gray" id="det-age">Age --</span>
@@ -918,11 +925,18 @@ input, textarea { -webkit-user-select: text; user-select: text; }
           <label class="cp-field" id="cp-visit-label" style="grid-column:1 / -1">Date of upcoming UDS or surgery <span class="cp-optional">(optional)</span>
             <input id="cp-visit-date" type="date" class="cp-input" />
           </label>
+          <label class="cp-field" style="grid-column:1 / -1">
+            <span style="display:flex;gap:6px;align-items:center;cursor:pointer" onclick="toggleCpThroneEmail()">
+              <input id="cp-throne-email-toggle" type="checkbox" style="margin:0" />
+              <span>Different email used at Throne signup <span class="cp-optional">(e.g. Apple Hide-My-Email)</span></span>
+            </span>
+            <input id="cp-throne-email" type="email" autocomplete="off" spellcheck="false" class="cp-input" placeholder="977csb86qd@privaterelay.appleid.com" style="display:none;margin-top:6px" />
+          </label>
         </div>
 
         <label style="display:flex;gap:6px;align-items:flex-start;font-size:11px;color:var(--text2);margin-bottom:10px">
           <input id="cp-throne-confirm" type="checkbox" style="margin-top:3px" checked />
-          <span>I have verified this email matches the participant's Throne account. Without this, their uroflow data cannot be linked to their Streamsync record.</span>
+          <span>I have verified the Throne signup email above is correct. Without this, their uroflow data cannot be linked to their Streamsync record.</span>
         </label>
 
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
@@ -3298,6 +3312,23 @@ function openPatient(key) {
   const detAgeInline=document.getElementById('det-age-inline'); if(detAgeInline) detAgeInline.textContent='Age '+formattedAge;
   const detPhone=document.getElementById('det-phone'); if(detPhone) detPhone.textContent=formatContact('Phone', p.phoneNumber);
   const detEmail=document.getElementById('det-email'); if(detEmail) detEmail.textContent=formatContact('Email', p.email);
+  // Throne signup email — shown only when it differs from the contact
+  // email (the common case is they're equal, so no need to clutter the
+  // header). The "+ Throne signup email" button is shown otherwise so a
+  // researcher can correct a Hide-My-Email participant inline.
+  const contactEmailNorm = (p.email || '').trim().toLowerCase();
+  const throneEmailNorm = (p.throneAccountEmail || '').trim().toLowerCase();
+  const detThroneWrap = document.getElementById('det-throne-email-wrap');
+  const detThroneAddWrap = document.getElementById('det-throne-email-add-wrap');
+  const detThroneEmail = document.getElementById('det-throne-email');
+  if (throneEmailNorm && throneEmailNorm !== contactEmailNorm) {
+    if (detThroneEmail) detThroneEmail.textContent = `Throne: ${throneEmailNorm}`;
+    if (detThroneWrap) detThroneWrap.style.display = '';
+    if (detThroneAddWrap) detThroneAddWrap.style.display = 'none';
+  } else {
+    if (detThroneWrap) detThroneWrap.style.display = 'none';
+    if (detThroneAddWrap) detThroneAddWrap.style.display = p.patientDocId ? '' : 'none';
+  }
   const sb=document.getElementById('det-surg'); if(sb) { sb.textContent=p.surg; sb.className='badge '+p.surg_cls; }
   const detMrn=document.getElementById('det-mrn'); if(detMrn) detMrn.textContent=p.mrn;
   const isUds = patientMatchesStudy(p, 'uds');
@@ -4982,6 +5013,80 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+/**
+ * Researcher-only correction for an enrolled participant whose Throne
+ * signup email differs from their Streamsync contact email — typically
+ * because the participant used Apple Hide-My-Email at Throne signup.
+ * Calls setParticipantThroneEmail to update the patients/{id} +
+ * users/{uid} mirrors and then offers to backfill any sessions Throne
+ * already has under the new email.
+ */
+async function openSetThroneEmailDialog() {
+  const key = currentPatientKey;
+  const p = patients[key];
+  if (!p) { showToast('No participant selected', '⚠️'); return; }
+  if (!p.patientDocId) {
+    showToast('This participant has no patients/{id} record — create one before setting a Throne email.', '⚠️', 5000);
+    return;
+  }
+  const currentVal = p.throneAccountEmail || p.email || '';
+  const next = window.prompt(
+    `Throne signup email for ${p.name || p.email}\n\nEnter the email the participant used to sign up to their Throne One device. ` +
+    `If they used Apple Hide-My-Email this will look like 977csb86qd@privaterelay.appleid.com. ` +
+    `This is the email Throne returns on every session export — it does not change the contact email used for Streamsync sign-in.`,
+    currentVal,
+  );
+  if (next == null) return;
+  const normalized = String(next).trim().toLowerCase();
+  if (!normalized) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    showToast('That does not look like a valid email', '⚠️');
+    return;
+  }
+  if (normalized === (p.throneAccountEmail || '').trim().toLowerCase()) {
+    showToast('No change — already set to that address', 'ℹ️');
+    return;
+  }
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) { showToast('Sign in as a researcher first', '⚠️'); return; }
+  const token = await currentUser.getIdToken();
+
+  showToast('Updating Throne signup email…', '⏳');
+  try {
+    const res = await fetch(getFunctionUrl('setParticipantThroneEmail'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ participantId: p.patientDocId, throneAccountEmail: normalized }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.status !== 'ok') {
+      throw new Error(payload.message || `HTTP ${res.status}`);
+    }
+    p.throneAccountEmail = payload.throneAccountEmail || normalized;
+    openPatient(key); // re-render header so the new value shows up
+    showToast('Throne signup email updated', '✅');
+
+    const shouldBackfill = window.confirm(
+      `Now backfill any existing voids from ${p.throneAccountEmail} into this participant's account? ` +
+      `(Recommended after correcting the email — Throne sessions written before now were dropped because they did not match.)`
+    );
+    if (shouldBackfill) {
+      showToast('Backfilling Throne voids…', '↻');
+      try {
+        const backfill = await requestParticipantThroneBackfill(p.throneAccountEmail, 180);
+        showToast(`Backfill complete: ${backfill.sessionCount || 0} sessions`, '✅', 4200);
+      } catch (backfillError) {
+        console.error('[openSetThroneEmailDialog] backfill error', backfillError);
+        showToast(`Backfill failed: ${backfillError?.message || backfillError}`, '⚠️', 5000);
+      }
+    }
+  } catch (err) {
+    console.error('[openSetThroneEmailDialog] error', err);
+    showToast(`Update failed: ${err?.message || err}`, '⚠️', 5000);
+  }
+}
+
 async function requestParticipantThroneBackfill(email, days = 180) {
   const currentUser = auth.currentUser;
   if (!currentUser) {
@@ -5007,6 +5112,18 @@ async function requestParticipantThroneBackfill(email, days = 180) {
   return payload;
 }
 
+function toggleCpThroneEmail() {
+  // Defer to the next tick so the checkbox's own click handler flips
+  // .checked first, then we show/hide based on its new state.
+  setTimeout(() => {
+    const checkbox = document.getElementById('cp-throne-email-toggle');
+    const input = document.getElementById('cp-throne-email');
+    if (!checkbox || !input) return;
+    input.style.display = checkbox.checked ? '' : 'none';
+    if (!checkbox.checked) input.value = '';
+  }, 0);
+}
+
 async function createParticipantV2() {
   const email = (document.getElementById('cp-email')?.value || '').trim().toLowerCase();
   const pathway = (document.getElementById('cp-pathway')?.value || '').trim() || (currentStudyKey === 'uds' ? 'uds' : 'bph');
@@ -5016,6 +5133,10 @@ async function createParticipantV2() {
   const dob = (document.getElementById('cp-dob')?.value || '').trim();
   const visitDate = (document.getElementById('cp-visit-date')?.value || '').trim();
   const throneConfirm = document.getElementById('cp-throne-confirm')?.checked === true;
+  const throneEmailDiffers = document.getElementById('cp-throne-email-toggle')?.checked === true;
+  const throneAccountEmail = throneEmailDiffers ?
+    (document.getElementById('cp-throne-email')?.value || '').trim().toLowerCase() :
+    '';
 
   const statusEl = document.getElementById('cp-status');
   const button = document.getElementById('cp-submit-btn');
@@ -5046,6 +5167,16 @@ async function createParticipantV2() {
     setStatus('Phone must contain at least 10 digits.', 'var(--red)');
     return;
   }
+  if (throneEmailDiffers) {
+    if (!throneAccountEmail) {
+      setStatus('Throne signup email is required when the toggle is on.', 'var(--red)');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(throneAccountEmail)) {
+      setStatus('Throne signup email does not look valid.', 'var(--red)');
+      return;
+    }
+  }
 
   if (button) button.disabled = true;
   setStatus('Creating participant…', 'var(--text2)');
@@ -5073,6 +5204,9 @@ async function createParticipantV2() {
     if (phoneNumber) body.phoneNumber = phoneNumber;
     if (dob) body.dob = new Date(`${dob}T12:00:00Z`).toISOString();
     if (visitDate) body.upcomingVisitDate = new Date(`${visitDate}T12:00:00Z`).toISOString();
+    // Hide-My-Email / different-Throne-email case: pass the throne email
+    // explicitly so the server stores it separately from the contact email.
+    if (throneAccountEmail) body.throneAccountEmail = throneAccountEmail;
 
     const res = await fetch(getFunctionUrl('createParticipant'), {
       method: 'POST',
@@ -5087,19 +5221,27 @@ async function createParticipantV2() {
     const participantId = payload.participantId || null;
 
     setStatus(`Created dashboard account ${firebaseUid || participantId || email}.`, 'var(--green)');
-    ['cp-email', 'cp-first', 'cp-last', 'cp-phone', 'cp-dob', 'cp-visit-date'].forEach((id) => {
+    ['cp-email', 'cp-first', 'cp-last', 'cp-phone', 'cp-dob', 'cp-visit-date', 'cp-throne-email'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.value = '';
     });
     const confirmEl = document.getElementById('cp-throne-confirm');
     if (confirmEl) confirmEl.checked = true;
+    const throneToggleEl = document.getElementById('cp-throne-email-toggle');
+    if (throneToggleEl) throneToggleEl.checked = false;
+    const throneEmailInputEl = document.getElementById('cp-throne-email');
+    if (throneEmailInputEl) throneEmailInputEl.style.display = 'none';
 
     showToast('Participant created', '✅');
-    const shouldBackfill = window.confirm(`Search Throne now for existing voids from ${email} and backfill them into this dashboard account?`);
+    // Backfill against the Throne signup email — that's what Throne's
+    // export indexes by. Falls back to the contact email when no
+    // separate signup email was provided.
+    const backfillEmail = throneAccountEmail || email;
+    const shouldBackfill = window.confirm(`Search Throne now for existing voids from ${backfillEmail} and backfill them into this dashboard account?`);
     if (shouldBackfill) {
-      setStatus(`Backfilling Throne voids for ${email}…`, 'var(--text2)');
+      setStatus(`Backfilling Throne voids for ${backfillEmail}…`, 'var(--text2)');
       try {
-        const backfill = await requestParticipantThroneBackfill(email, 180);
+        const backfill = await requestParticipantThroneBackfill(backfillEmail, 180);
         setStatus(
           `Created account. Backfill matched ${backfill.matchedDoneWithMetricsCount || 0} active voids and wrote ${backfill.sessionCount || 0} sessions / ${backfill.metricCount || 0} metrics.`,
           'var(--green)'
@@ -5382,6 +5524,8 @@ async function init() {
         age: extra.age || null,
         phoneNumber: extra.phoneNumber || null,
         email: extra.email || null,
+        throneAccountEmail: extra.throneAccountEmail || null,
+        patientDocId: extra.patientDocId || null,
         enrolledAt: extra.enrolledAt || extra.createdAt || null,
         createdAt: extra.createdAt || null,
         studyKey,

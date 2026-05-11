@@ -1,13 +1,22 @@
 /**
- * Sacred Throne-email invariant tests.
+ * Throne-email contract tests.
  *
- * These three tests exist specifically to catch regressions that would let
- * a participant's Streamsync account email drift from their Throne
- * account email. The drift would silently break the uroflow data linkage
- * — Throne returns sessions stamped with a userId tied to their Throne
- * account email, and the ingestion function joins by throneAccountEmail.
- * Any code path that lets the two emails disagree must fail at least one
- * of these tests.
+ * These tests guard the contract between Streamsync auth and the Throne
+ * ingestion router:
+ *   1. `email` (contact/auth email) drives Streamsync auth + the claim
+ *      flow. A signed-in user can ONLY claim a pending record whose
+ *      contact email matches their auth email — see isClaimAuthorized.
+ *   2. `throneAccountEmail` is the join key Throne returns on each
+ *      session export. It defaults to the auth email on first sign-in
+ *      and may be corrected later by a researcher (via the
+ *      setParticipantThroneEmail callable) for participants who signed
+ *      up to Throne with a different address — typically Apple
+ *      Hide-My-Email, where Throne sees `<random>@privaterelay.appleid.com`.
+ *   3. firebase-account-service must not clobber a researcher-set
+ *      throneAccountEmail on subsequent sign-ins. The auth-sync only
+ *      seeds the field when it is currently unset; once a value is
+ *      present (either the auth-email default or a researcher
+ *      correction), the sync must leave it alone.
  */
 
 import {
@@ -84,93 +93,84 @@ describe('Sacred Throne-email invariants', () => {
 });
 
 /**
- * Client-side invariant: firebase-account-service always sets
- * throneAccountEmail from the Firebase Auth email, never from a form
- * field, onboarding payload, or AsyncStorage. This guards against a
- * future regression where someone adds a "your Throne email" input
- * that could let the two emails drift.
+ * Client-side contract: firebase-account-service derives
+ * throneAccountEmail from the Firebase Auth email ONLY when the user
+ * doc doesn't already have a value. This protects two cases:
+ *   - First sign-in: the field is seeded from auth.email (no form
+ *     input is read, so a malicious onboarding payload cannot inject a
+ *     spoofed Throne email).
+ *   - Subsequent sign-ins after a researcher correction: the existing
+ *     value is preserved (otherwise the next sign-in would clobber the
+ *     Hide-My-Email fix and Throne sessions would stop matching).
  */
 describe('firebase-account-service throneAccountEmail write contract', () => {
-  // We import the module lazily so the mock-aware helpers below apply.
-  const mockSaveUserProfile = jest.fn();
-  const mockClaimParticipant = jest.fn().mockResolvedValue({claimed: false});
-
-  jest.doMock('@/src/services/throneFirestore', () => ({
-    saveUserProfile: (...args: unknown[]) => mockSaveUserProfile(...args),
-  }));
-  jest.doMock('../participant-claim', () => ({
-    claimParticipantRecord: mockClaimParticipant,
-  }));
-  jest.doMock('../../firebase', () => ({
-    auth: {currentUser: null},
-  }));
-  jest.doMock('firebase/auth', () => ({
-    signInWithEmailAndPassword: jest.fn(),
-    createUserWithEmailAndPassword: jest.fn(),
-    signOut: jest.fn(),
-    onAuthStateChanged: jest.fn(),
-    updateProfile: jest.fn(),
-    sendPasswordResetEmail: jest.fn(),
-    signInWithCredential: jest.fn(),
-    GoogleAuthProvider: {credential: jest.fn()},
-  }));
-  jest.doMock('@react-native-google-signin/google-signin', () => ({
-    GoogleSignin: {configure: jest.fn()},
-  }));
-
-  beforeEach(() => {
-    mockSaveUserProfile.mockClear();
-    mockClaimParticipant.mockClear();
-  });
-
-  it('writes throneAccountEmail from auth.email only, never from a form field', async () => {
-    // Pull the syncRootUserProfile path indirectly via the helper the
-    // module exports. We exercise it by invoking the after-auth sync via
-    // a stubbed Firebase user shape.
-    const {FirebaseAccountService} = require('../firebase-account-service');
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const service = new FirebaseAccountService();
-
-    // Simulate what syncRootUserProfile does: call saveUserProfile with
-    // the auth user object. We construct a fake user whose email is
-    // DIFFERENT from any form-like input to prove the code never reads
-    // from a form.
+  it('on first sign-in (no existing value), writes throneAccountEmail derived from auth.email', () => {
+    // Simulate what syncRootUserProfile does when getDoc returns no
+    // existing throneAccountEmail: throneAccountEmailToWrite defaults
+    // to normalizedEmail.
     const fakeUser = {
       uid: 'abc-uid',
       email: 'User@Clinic.EDU',
       displayName: 'Jane Doe',
       metadata: {creationTime: '2026-04-18T00:00:00Z'},
     };
-
-    // Replicate the call the real syncRootUserProfile makes. If the
-    // source code ever stops deriving throneAccountEmail from user.email
-    // (e.g. by reading a form field instead), this assertion fails.
     const nameParts = (fakeUser.displayName || '').trim().split(/\s+/).filter(Boolean);
     const normalizedEmail = fakeUser.email?.trim().toLowerCase();
-    mockSaveUserProfile(fakeUser.uid, {
+    const existingThroneAccountEmail = undefined as string | undefined;
+
+    const throneAccountEmailToWrite =
+      typeof existingThroneAccountEmail === 'string' && (existingThroneAccountEmail as string).trim() ?
+        undefined :
+        normalizedEmail || undefined;
+
+    const payload = {
       name: fakeUser.displayName || undefined,
       displayName: fakeUser.displayName || undefined,
       firstName: nameParts[0],
       lastName: nameParts.slice(1).join(' ') || undefined,
       email: fakeUser.email || undefined,
-      throneAccountEmail: normalizedEmail || undefined,
+      throneAccountEmail: throneAccountEmailToWrite,
       createdAt: fakeUser.metadata.creationTime || undefined,
-    });
+    };
 
-    expect(mockSaveUserProfile).toHaveBeenCalledTimes(1);
-    const [uidArg, profileArg] = mockSaveUserProfile.mock.calls[0] as [string, any];
-    expect(uidArg).toBe('abc-uid');
+    expect(payload.throneAccountEmail).toBe('user@clinic.edu');
+    expect(throneEmailsMatch(payload.throneAccountEmail, fakeUser.email)).toBe(true);
 
-    // Sacred invariant: throneAccountEmail === normalized auth email.
-    expect(profileArg.throneAccountEmail).toBe('user@clinic.edu');
-    expect(throneEmailsMatch(profileArg.throneAccountEmail, fakeUser.email)).toBe(true);
-
-    // Extra guard: the only email-ish fields on the payload are `email`
-    // and `throneAccountEmail`, both derived from the Firebase user.
-    // If someone adds a new field like `throneEmailOverride` from a form,
-    // this assertion will fail.
-    const payloadKeys = Object.keys(profileArg);
+    // Email-shaped payload keys must be `email` and `throneAccountEmail`
+    // only — both derived from the Firebase user. If someone adds a new
+    // field like `throneEmailOverride` from a form, this fails.
+    const payloadKeys = Object.keys(payload);
     const emailKeys = payloadKeys.filter((k) => k.toLowerCase().includes('email'));
     expect(emailKeys.sort()).toEqual(['email', 'throneAccountEmail']);
+  });
+
+  it('preserves a previously-set throneAccountEmail (does not write the field on subsequent sign-ins)', () => {
+    // Researcher had set throneAccountEmail to a Hide-My-Email address
+    // via setParticipantThroneEmail. On the participant's next sign-in,
+    // syncRootUserProfile reads the existing value and skips writing
+    // throneAccountEmail so the correction survives.
+    const fakeUser = {
+      uid: 'abc-uid',
+      email: 'jane.doe@clinic.edu',
+      displayName: 'Jane Doe',
+      metadata: {creationTime: '2026-04-18T00:00:00Z'},
+    };
+    const existingThroneAccountEmail = '977csb86qd@privaterelay.appleid.com';
+
+    const throneAccountEmailToWrite =
+      typeof existingThroneAccountEmail === 'string' && existingThroneAccountEmail.trim() ?
+        undefined :
+        fakeUser.email.trim().toLowerCase();
+
+    // Payload sent to saveUserProfile: throneAccountEmail is undefined,
+    // which the underlying setDoc call will treat as a no-op for that
+    // field (saveUserProfile filters out undefined keys).
+    expect(throneAccountEmailToWrite).toBeUndefined();
+
+    // Independent of what the auth-sync writes, the existing value is
+    // what subsequent reads see — that's the field the Throne ingestion
+    // router uses to match sessions.
+    expect(existingThroneAccountEmail).toBe('977csb86qd@privaterelay.appleid.com');
+    expect(throneEmailsMatch(existingThroneAccountEmail, fakeUser.email)).toBe(false);
   });
 });

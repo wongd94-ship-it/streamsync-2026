@@ -11,10 +11,12 @@
  *   - ALL writes to patients/{id} go through a callable (no direct client
  *     writes). Clients cannot read patients/{id} either — they read the
  *     non-PHI mirror at users/{firebaseUid}.
- *   - The email on patients/{id}, throne_research_participants/{email},
- *     and patients/{id}.throneAccountEmail are all kept equal — this is
- *     the sacred invariant that links Streamsync auth to Throne uroflow
- *     data.
+ *   - The contact email (`email`) drives Streamsync auth + the claim
+ *     flow. The Throne join key (`throneAccountEmail`) defaults to it but
+ *     can diverge when a participant signed up to Throne with a different
+ *     address (typically Apple Hide-My-Email). createParticipant accepts
+ *     an optional throneAccountEmail input; setParticipantThroneEmail
+ *     corrects an already-enrolled participant.
  *   - DOB is stored as a full ISO-8601 timestamp (user answered "Full
  *     date (Timestamp)" during the plan-approval flow).
  */
@@ -41,6 +43,7 @@ interface CreateParticipantInput {
   upcomingVisitDate?: unknown;
   upcomingVisitNotes?: unknown;
   confirmedThroneEmailMatch?: unknown;
+  throneAccountEmail?: unknown;
 }
 
 // ─── Validation helpers ──────────────────────────────────────────────────────
@@ -135,6 +138,12 @@ export async function createParticipant(
     input.upcomingVisitNotes.trim() :
     undefined;
   const confirmedThroneEmailMatch = input.confirmedThroneEmailMatch;
+  // Optional override — when provided, this is the email the participant
+  // used at Throne One signup (e.g. Apple Hide-My-Email). Defaults to the
+  // contact email when omitted.
+  const throneAccountEmail = input.throneAccountEmail == null || input.throneAccountEmail === "" ?
+    email :
+    normalizeEmail(input.throneAccountEmail);
 
   if (confirmedThroneEmailMatch !== true) {
     throw new ValidationError(
@@ -193,7 +202,9 @@ export async function createParticipant(
     dob: dob ? dob.toISOString() : null,
     phoneNumber: phoneRaw,
     email,
-    throneAccountEmail: email, // invariant: = email
+    // Defaults to email; researcher can supply a different address when
+    // the participant signed up to Throne with a separate email.
+    throneAccountEmail,
     throneUserId: null,
     upcomingVisit,
     pendingPathwayChange: null,
@@ -216,7 +227,7 @@ export async function createParticipant(
     pathway,
     studyKey: pathway === "uds" ? "uds" : "bladder",
     upcomingVisit,
-    throneAccountEmail: email,
+    throneAccountEmail,
     throneAccountLinked: true,
     email,
     firstName,
@@ -235,10 +246,16 @@ export async function createParticipant(
   const batch = db.batch();
   batch.set(participantRef, participantDoc);
   batch.set(db.collection("users").doc(dashboardUid), userMirror, {merge: true});
+  // Key by throneAccountEmail — that's the email Throne returns on every
+  // session, and what the ingestion router uses to route sessions to a
+  // Firebase user. When the contact email differs (Hide-My-Email case),
+  // we also write a doc keyed by `email` so a future researcher who only
+  // knows the contact email can still resolve to the same firebaseUid.
   batch.set(
-    db.collection("throne_research_participants").doc(email),
+    db.collection("throne_research_participants").doc(throneAccountEmail),
     {
-      email,
+      email: throneAccountEmail,
+      throneAccountEmail,
       firebaseUid: dashboardUid,
       enrolledAt: now,
       throneAccountCreated: true,
@@ -246,12 +263,27 @@ export async function createParticipant(
     },
     {merge: true},
   );
+  if (throneAccountEmail !== email) {
+    batch.set(
+      db.collection("throne_research_participants").doc(email),
+      {
+        email,
+        throneAccountEmail,
+        firebaseUid: dashboardUid,
+        enrolledAt: now,
+        throneAccountCreated: true,
+        lastSyncAt: null,
+      },
+      {merge: true},
+    );
+  }
   await batch.commit();
 
   logger.info("createParticipant: created dashboard-owned participant", {
     participantId,
     dashboardUid,
     email,
+    throneAccountEmail,
     pathway,
   });
   return {participantId, firebaseUid: dashboardUid};
@@ -419,6 +451,119 @@ export async function confirmPathwayChange(
   }
   await batch.commit();
   logger.info("confirmPathwayChange: applied", {participantId, newPathway, confirmer});
+}
+
+// ─── setParticipantThroneEmail ───────────────────────────────────────────────
+
+export interface SetParticipantThroneEmailInput {
+  participantId?: unknown;
+  throneAccountEmail?: unknown;
+}
+
+/**
+ * Researcher-only correction path. Updates an already-enrolled
+ * participant's Throne account email (the email the Throne API returns on
+ * each session). Use this when the participant signed up to Throne with a
+ * different address than their Streamsync contact email — most commonly
+ * Apple Hide-My-Email, where Throne sees `<random>@privaterelay.appleid.com`
+ * but Streamsync was enrolled with the contact email.
+ *
+ * Writes:
+ *   patients/{id}.throneAccountEmail        — the canonical join key
+ *   users/{firebaseUid}.throneAccountEmail  — mirrored to the iOS app
+ *   throne_research_participants/{newEmail} — uid map for the ingestion router
+ *
+ * Does NOT trigger a Throne backfill — the caller is expected to invoke
+ * backfillThroneParticipant afterward to pull any historical sessions.
+ *
+ * @param {admin.firestore.Firestore} db The Firestore client.
+ * @param {SetParticipantThroneEmailInput} input participantId + new throneAccountEmail.
+ * @return {Promise<object>} The participant id, firebase uid, the new throne email,
+ *   and the previous value (null if unset).
+ */
+export async function setParticipantThroneEmail(
+  db: admin.firestore.Firestore,
+  input: SetParticipantThroneEmailInput,
+): Promise<{
+  participantId: string;
+  firebaseUid: string | null;
+  throneAccountEmail: string;
+  previousThroneAccountEmail: string | null;
+}> {
+  const participantId = asNonEmptyString(input.participantId, "participantId");
+  const throneAccountEmail = normalizeEmail(input.throneAccountEmail);
+
+  const ref = db.collection("patients").doc(participantId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new ValidationError(`patients/${participantId} does not exist`);
+  }
+  const data = snap.data() ?? {};
+  const firebaseUid = typeof data.firebaseUid === "string" ? data.firebaseUid : null;
+  const contactEmail = typeof data.email === "string" ? data.email.trim().toLowerCase() : "";
+  const previous = typeof data.throneAccountEmail === "string" ?
+    data.throneAccountEmail.trim().toLowerCase() :
+    null;
+
+  if (previous === throneAccountEmail) {
+    logger.info("setParticipantThroneEmail: no-op (already set)", {
+      participantId,
+      throneAccountEmail,
+    });
+    return {participantId, firebaseUid, throneAccountEmail, previousThroneAccountEmail: previous};
+  }
+
+  const now = new Date().toISOString();
+  const batch = db.batch();
+  batch.update(ref, {throneAccountEmail, updatedAt: now});
+  if (firebaseUid) {
+    batch.set(
+      db.collection("users").doc(firebaseUid),
+      {throneAccountEmail, updatedAt: now},
+      {merge: true},
+    );
+  }
+  // The ingestion router reads users/{uid}.throneAccountEmail directly, but
+  // we still write the throne_research_participants entry so the email →
+  // firebaseUid map stays queryable from the dashboard and admin scripts.
+  batch.set(
+    db.collection("throne_research_participants").doc(throneAccountEmail),
+    {
+      email: throneAccountEmail,
+      throneAccountEmail,
+      firebaseUid: firebaseUid ?? null,
+      throneAccountCreated: true,
+      updatedAt: now,
+    },
+    {merge: true},
+  );
+  if (contactEmail && contactEmail !== throneAccountEmail) {
+    batch.set(
+      db.collection("throne_research_participants").doc(contactEmail),
+      {
+        email: contactEmail,
+        throneAccountEmail,
+        firebaseUid: firebaseUid ?? null,
+        updatedAt: now,
+      },
+      {merge: true},
+    );
+  }
+  await batch.commit();
+
+  logger.info("setParticipantThroneEmail: updated", {
+    participantId,
+    firebaseUid,
+    contactEmail,
+    previous,
+    throneAccountEmail,
+  });
+  return {
+    participantId,
+    firebaseUid,
+    throneAccountEmail,
+    previousThroneAccountEmail: previous,
+  };
 }
 
 // ─── Exports for onRequest wrappers (see index.ts) ───────────────────────────

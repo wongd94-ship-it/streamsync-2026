@@ -34,6 +34,7 @@ import {
   claimParticipant as claimParticipantImpl,
   requestPathwayChange as requestPathwayChangeImpl,
   confirmPathwayChange as confirmPathwayChangeImpl,
+  setParticipantThroneEmail as setParticipantThroneEmailImpl,
   ValidationError,
 } from "./participant";
 import {
@@ -500,6 +501,8 @@ export const enrollUdsParticipants = onRequest(async (req, res) => {
  * the tracker and surface reminder flags. Authenticated with a single
  * bearer token (`COWORK_SYNC_TOKEN` secret) — no Firebase Auth flow
  * because the routine runs unattended.
+ *
+ * Build: 2026-05-11 (force revision refresh to rebind rotated secret)
  */
 export const coworkAdherenceSync = onRequest(
   {secrets: ["COWORK_SYNC_TOKEN"], invoker: "public"},
@@ -631,6 +634,32 @@ export const requestPathwayChange = onRequest(async (req, res) => {
       "participant";
     await requestPathwayChangeImpl(admin.firestore(), participantId, to, {uid, kind});
     res.status(200).json({status: "ok"});
+  } catch (err) {
+    sendValidationError(res, err);
+  }
+});
+
+/**
+ * Researcher-only correction of an enrolled participant's Throne account
+ * email. Used when the contact email (`patients/{id}.email`) doesn't
+ * match the email Throne returns on session exports — most commonly
+ * because the participant signed up to Throne via Apple Hide-My-Email.
+ *
+ * Backfill is NOT triggered automatically; the dashboard caller should
+ * follow up with backfillThroneParticipant against the new email to pull
+ * any sessions already on Throne's side.
+ */
+export const setParticipantThroneEmail = onRequest(async (req, res) => {
+  if (setCorsHeaders(req, res)) return;
+  if (req.method !== "POST") {
+    res.status(405).send("Method not allowed");
+    return;
+  }
+  try {
+    const researcherUid = await requireResearcherUid(req);
+    const result = await setParticipantThroneEmailImpl(admin.firestore(), req.body ?? {});
+    logger.info("setParticipantThroneEmail: researcher updated", {researcherUid, ...result});
+    res.status(200).json({status: "ok", ...result});
   } catch (err) {
     sendValidationError(res, err);
   }

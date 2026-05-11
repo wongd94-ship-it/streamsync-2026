@@ -74,7 +74,12 @@ export interface Participant {
   dob: string;
   phoneNumber: string;
   email: string;
-  throneAccountEmail: string;               // === email (enforced by createParticipant)
+  // Email used at Throne One signup — the key Throne's API returns on each
+  // session. Defaults to `email` but may differ when the participant signed
+  // up to Throne with a different address (e.g. Apple Hide-My-Email). When
+  // it differs, a researcher sets it via setParticipantThroneEmail; the
+  // contact email (`email`) still drives Streamsync auth and claim flow.
+  throneAccountEmail: string;
 
   throneUserId: string | null;              // null until Throne OAuth/link
 
@@ -120,10 +125,34 @@ export interface CreateParticipantInput {
   upcomingVisitNotes?: string;
   /** Must be true — UI checkbox confirming email matches Throne account. */
   confirmedThroneEmailMatch: true;
+  /**
+   * Optional. The email the participant used at Throne One signup, when it
+   * differs from their contact email (e.g. Apple Hide-My-Email). When
+   * omitted, the server uses `email` as the Throne account email.
+   */
+  throneAccountEmail?: string;
 }
 
 export interface CreateParticipantResult {
   participantId: string;
+}
+
+/**
+ * Input to the `setParticipantThroneEmail` callable — researcher-only path
+ * to correct an already-enrolled participant's Throne account email when
+ * the contact email doesn't match Throne (typically because they signed
+ * up via Apple Hide-My-Email).
+ */
+export interface SetParticipantThroneEmailInput {
+  participantId: string;
+  throneAccountEmail: string;
+}
+
+export interface SetParticipantThroneEmailResult {
+  participantId: string;
+  firebaseUid: string | null;
+  throneAccountEmail: string;
+  previousThroneAccountEmail: string | null;
 }
 
 export interface ClaimParticipantResult {

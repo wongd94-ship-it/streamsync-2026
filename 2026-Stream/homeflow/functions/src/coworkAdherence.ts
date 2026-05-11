@@ -239,6 +239,16 @@ async function ensureEnrolled(
   const isAlreadyActive = existingData?.status === "active";
   const isReactivation = !!existingData && existingData?.status === "withdrawn";
 
+  // Preserve any researcher-set throneAccountEmail. The Cowork tracker
+  // doesn't know the participant's Throne login email; it only has the
+  // contact email. If we wrote `throneAccountEmail: email` unconditionally
+  // we'd clobber corrections made by setParticipantThroneEmail every
+  // daily sync. Only seed it on first enrollment.
+  const existingThroneAccountEmail = typeof existingData?.throneAccountEmail === "string" ?
+    existingData.throneAccountEmail.trim().toLowerCase() :
+    "";
+  const throneAccountEmail = existingThroneAccountEmail || email;
+
   const displayName = [participant.firstName, participant.lastName].filter(Boolean).join(" ").trim() || email;
   const upcomingVisit = participant.urodynamicsDate ?
     {
@@ -256,7 +266,7 @@ async function ensureEnrolled(
     studyKey: "uds",
     pathway: "uds",
     email,
-    throneAccountEmail: email,
+    throneAccountEmail,
     firebaseUid,
     userId: firebaseUid,
     firstName: participant.firstName,
@@ -280,7 +290,7 @@ async function ensureEnrolled(
     studyKey: "uds",
     pathway: "uds",
     email,
-    throneAccountEmail: email,
+    throneAccountEmail,
     throneAccountLinked: true,
     firstName: participant.firstName,
     lastName: participant.lastName,
@@ -303,10 +313,15 @@ async function ensureEnrolled(
   const batch = db.batch();
   batch.set(patientRef, patientPayload, {merge: true});
   batch.set(db.collection("users").doc(firebaseUid), userMirrorPayload, {merge: true});
+  // Always write the doc keyed by throneAccountEmail (the Throne join key).
+  // If the throne email differs from the contact email, also write a
+  // doc keyed by the contact email so the email → uid map remains
+  // resolvable from either side.
   batch.set(
-    db.collection("throne_research_participants").doc(email),
+    db.collection("throne_research_participants").doc(throneAccountEmail),
     {
-      email,
+      email: throneAccountEmail,
+      throneAccountEmail,
       firebaseUid,
       enrolledAt: nowIso,
       throneAccountCreated: true,
@@ -315,6 +330,21 @@ async function ensureEnrolled(
     },
     {merge: true},
   );
+  if (throneAccountEmail !== email) {
+    batch.set(
+      db.collection("throne_research_participants").doc(email),
+      {
+        email,
+        throneAccountEmail,
+        firebaseUid,
+        enrolledAt: nowIso,
+        throneAccountCreated: true,
+        lastSyncAt: existingData?.lastSyncAt ?? null,
+        enrollmentSource: "cowork_tracker",
+      },
+      {merge: true},
+    );
+  }
   await batch.commit();
 
   let outcomeStatus: EnrollmentOutcome["status"];
