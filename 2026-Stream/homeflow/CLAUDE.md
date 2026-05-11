@@ -217,6 +217,72 @@ Notifications fire 1 day before, day-of, and 1 day after each due date.
 
 ---
 
+## Support Chat, Adherence Monitoring & Notifications
+
+These three systems work together: adherence monitoring decides *when* to nudge a participant, notifications deliver the nudge, and the AI Support chat is the participant's path to ask "why" and get help.
+
+### AI Support Chat
+
+Anthropic-backed conversational support, available to participants from anywhere in the app via a floating bubble.
+
+**Backend** — `functions/src/supportChat.ts` (Gen 2 onRequest Cloud Function)
+- Model: `claude-sonnet-4-6` (constant `ANTHROPIC_MODEL`). The original demo file had `claude-sonnet-4-20250514`, which does not exist — do not "fix" the model name back to a date-stamped string.
+- Anthropic key lives in Firebase Secret Manager (`ANTHROPIC_API_KEY`), never on disk.
+- **PII firewall:** the function reads the participant's `users/{uid}` document and only passes `firstName` plus study-logistics fields (pathway, consent status, UDS date, surgery date, current phase, observation window) into the prompt. Last name, email, full DOB, addresses, raw clinical records — none of that ever reaches Anthropic.
+- **Study-context-aware system prompt:** built fresh per request, includes the participant's pathway / UDS date / surgery date / consent state, current Throne + HealthKit sync recency, and the per-study sync threshold.
+- **Demo-mode fallback:** if the participant has no Throne data yet, the function falls back to `DEMO_THRONE_UID = "CUziuLyPtDNO2IvSbsifXPKrNEk2"` so first-week participants see realistic demo voiding context.
+- **Knowledge bases** embedded inline in the system prompt:
+  - `functions/src/throneSupportKnowledge.ts` — distilled from support.thronescience.com (device setup, troubleshooting, account linking)
+  - `functions/src/appleHealthKnowledge.ts` — distilled from support.apple.com (HealthKit perms, Watch pairing, Clinical Records)
+- **Nightly summary aggregator** — `runNightlySupportSummary()` writes a per-participant Morning Briefing to `nightly_summaries/{date}` that the researcher dashboard reads.
+
+**Client service** — `lib/services/support-chat-service.ts`
+- `startSupportChat`, `sendSupportMessage`, `subscribeToChat`, `subscribeToActiveChat`, `findActiveChat`, `markChatRead`
+- Persistence: chats live at `supportChats/{chatId}`, messages at `supportChats/{chatId}/messages/{messageId}` (each with `role: 'user' | 'assistant' | 'researcher'`).
+
+**UI**
+- `app/support-chat.tsx` — full-screen modal (`presentation: 'fullScreenModal'` — do NOT change to `'modal'`, the pageSheet variant has irrecoverable keyboard-overlap bugs). `keyboardVerticalOffset={0}`, font size 17, input minHeight 48 / maxHeight 140.
+- `components/support-chat/SupportChatBubble.tsx` — floating FAB above the tab bar with unread badge. Rendered globally so participants reach it from any screen.
+
+**Researcher-initiated threads** — the dashboard can open a new thread for any participant (e.g. to follow up on a sync gap). Messages with `role === 'researcher'` go through the same Firestore path and trigger the same notification fanout as researcher replies to participant-initiated threads.
+
+### Adherence Monitoring
+
+Goal: detect when a participant's Throne or Apple Watch data has gone stale and nudge them before adherence collapses.
+
+**Configurable per-study threshold** — `/config/support_chat` (Firestore root doc)
+- Field: `syncThresholdHours` (number; default 48; researcher-tunable from 12–168h via a slider on the dashboard).
+- Both the Cloud Function (for chat context) and the client (`notification-service.ts:289`) read the same doc so they stay in sync.
+
+**Foreground tick** — `hooks/use-data-sync-check.ts`
+- Runs on every app foreground.
+- Reads `users/{uid}/throne_sync/state` for `lastVoidAt` and aggregates `users/{uid}/hk_sync/{metric}` for the max `lastSyncedAt`.
+- If either exceeds `syncThresholdHours`, kicks off a repeating reminder.
+
+**Repeating reminder cadence** — `lib/services/notification-service.ts`
+- `startRepeatingReminder` schedules a local notification every **4 hours** (`HOURS_4 = 4 * 60 * 60 * 1000`) until the user opens the app and the sync gap closes.
+- `stopRepeatingReminder` cancels when adherence is restored.
+- Notification body shows **actual elapsed time** via `formatElapsedHours` + `SyncBodyState` — not a hardcoded "48 hours."
+
+**Adaptive Throne status card on the home dashboard** — see the "Adaptive Throne Status Card" section above for the participant-facing UX.
+
+### Notifications
+
+Three distinct notification systems coexist:
+
+**1. Local repeating sync reminders** (covered above) — fired by `notification-service.ts`, not by a server.
+
+**2. IPSS reminders** — local notifications scheduled at task-creation time for 1 day before / day-of / 1 day after each IPSS due date. Tapping routes to the appropriate `questionnaire/` modal.
+
+**3. Researcher message notifications** — when a researcher sends a message from the dashboard:
+- **Firestore trigger** `functions/src/notifyOnSupportMessage.ts` — fires on create at `supportChats/{chatId}/messages/{messageId}`, only when `role === 'researcher'`.
+- Reads `users/{uid}.expoPushTokens`, POSTs to the Expo push API, and **prunes any token Expo returns as `DeviceNotRegistered`** so dead tokens don't accumulate.
+- **Foreground listener fallback** — `hooks/use-researcher-message-buzz.ts` subscribes to the active chat and triggers a local notification + haptic when the app is in the foreground (since OS push notifications don't fire in that state).
+
+**Push notifications are gated on a paid Apple Developer Program** — the `aps-environment` entitlement is currently OUT of `ios/StreamSync/StreamSync.entitlements` because the personal Apple Developer team doesn't support push. The foreground-listener fallback covers researcher-message delivery in the meantime; the repeating sync reminders use local notifications which work on any tier.
+
+---
+
 ## Data Model — Firestore Structure
 
 ```
@@ -314,13 +380,24 @@ StandardProvider → SchedulerProvider → AccountProvider → App
 | `app/(tabs)/health.tsx` | Apple HealthKit data display |
 | `lib/services/onboarding-service.ts` | Onboarding state machine |
 | `lib/services/throne-service.ts` | Throne integration service |
-| `lib/services/notification-service.ts` | Notifications + reminders |
+| `lib/services/notification-service.ts` | Local notifications, IPSS reminders, repeating sync nudges |
+| `lib/services/support-chat-service.ts` | Client-side support-chat persistence + streaming |
+| `app/support-chat.tsx` | Full-screen support-chat modal |
+| `components/support-chat/SupportChatBubble.tsx` | Floating chat FAB rendered globally |
+| `hooks/use-data-sync-check.ts` | Foreground tick — detects Throne/HK staleness |
+| `hooks/use-researcher-message-buzz.ts` | Foreground fallback when push notifs aren't available |
+| `functions/src/supportChat.ts` | Anthropic-backed support chat Cloud Function + PII firewall |
+| `functions/src/notifyOnSupportMessage.ts` | Firestore trigger — push to participant on researcher reply |
+| `functions/src/throneSupportKnowledge.ts` | Throne support KB embedded in the system prompt |
+| `functions/src/appleHealthKnowledge.ts` | Apple Health / Watch / Clinical Records KB |
 | `lib/services/healthkit/` | HealthKit query + sync layer |
 | `lib/services/smart/` | SMART on FHIR OAuth + sync |
 | `lib/services/fhir/` | FHIR R4 parsing + mapping |
 | `src/services/healthkitSync.ts` | HealthKit → Firestore sync |
 | `src/services/ipssScoreSync.ts` | IPSS → Firestore sync |
 | `docs/PRD.md` | Product requirements — update to match |
+| `docs/SECURITY.md` | Secrets handling + .env workflow + audit log |
+| `docs/APPLE_DEVELOPER_HANDOFF.md` | Apple Developer Program handoff (push + Clinical Records entitlement) |
 
 ## Don't
 
