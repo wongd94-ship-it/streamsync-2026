@@ -3,9 +3,9 @@ Pod::Spec.new do |s|
   s.version        = '0.1.0'
   s.summary        = 'Expo module for Apple Health Clinical Records (FHIR)'
   s.description    = 'Queries HKClinicalRecord types and returns raw FHIR R4 JSON payloads.'
-  s.homepage       = 'https://github.com/CS342/2026-Stream'
+  s.homepage       = 'https://github.com/wongd94-ship-it/streamsync-2026'
   s.license        = { type: 'MIT' }
-  s.author         = 'Stream Team'
+  s.author         = 'Streamsync Research Consortium'
   s.source         = { git: '' }
 
   s.platform       = :ios, '16.0'

@@ -1,10 +1,10 @@
-# AI Coding Instructions for HomeFlow
+# AI Coding Instructions for Streamsync
 
 ## Project Context
 
-**Project:** HomeFlow - BPH Patient Digital Health Study
-**Course:** CS342 – Building for Digital Health
-**Team:** Stream Team (Team 3)
+**Project:** Streamsync — BPH Patient Digital Health Study
+**Sponsor:** Streamsync Research Consortium (multi-center)
+**Principal Investigator:** Daniel Wong, MD
 **Platform:** iOS-first (React Native / Expo), cross-platform where feasible
 
 **Purpose:** Enable passive, longitudinal measurement of voiding patterns, activity, and sleep in the home environment for BPH patients before and after bladder outlet surgery.
@@ -92,7 +92,7 @@ StandardProvider → SchedulerProvider → AccountProvider → App
 
 ## Constraints & Assumptions
 
-- This is a **research prototype** for CS342 - demo-safe implementations acceptable
+- This is a **research pilot** - demo-safe implementations acceptable
 - Backend may be simulated or partially stubbed
 - Data collected is **not used for clinical care**
 - During demos, Throne uroflow data may be simulated if hardware unavailable

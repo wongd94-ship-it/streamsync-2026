@@ -1,8 +1,8 @@
 # Streamsync
 
-A research app for Stanford's CS342 — Building for Digital Health. Streamsync helps men with BPH (benign prostatic hyperplasia) passively track their voiding patterns, sleep, and activity before and after bladder outlet surgery, so researchers can measure real world functional improvement and use rich digital data to predict patients most likely to benefit from intervention.
+A multi-center digital-health research app. Streamsync helps men with BPH (benign prostatic hyperplasia) passively track their voiding patterns, sleep, and activity before and after bladder outlet surgery, so researchers can measure real-world functional improvement and use rich digital data to predict patients most likely to benefit from intervention.
 
-Built by Stream Team (Team 3).
+The app is institutionally agnostic and is being piloted across multiple academic medical centers participating in the BPH Research Consortium.
 
 ---
 
@@ -14,7 +14,7 @@ Concretely, it:
 
 - Records every void using a **Throne uroflow device** attached to the patient's toilet, capturing flow rate, volume, and flow curve shape, pulls information with Throne API once per day
 - Pulls **activity, sleep, resting heart rate and heart rate** data from Apple Watch and HealthKit automatically, once per day
-- Collects a **baseline IPSS symptom score** at enrollment and follow-up scores at 1, 3, 6 and 12 months post-surgery
+- Collects a **baseline IPSS symptom score** at enrollment and follow-up scores at 1, 2, and 3 months post-surgery
 - Walks patients through **enrollment and informed consent** entirely in-app, with a signed PDF stored securely
 - User login and SSO auth enabled
 - Allows patients to share medical records through SMART on FHIR for seamless acquisition of medical history
@@ -267,8 +267,8 @@ Study-level admin docs outside `users/{uid}`:
 
 ## Team
 
-Stream Team — Stanford CS342
+Streamsync Research Consortium — multi-center BPH study
 
-Principal Investigator: Ryan Sun, MD
-IRB Protocol: IRB# -----
+Principal Investigator: Daniel Wong, MD
+IRB Protocol: IRB# TBD
 Contact: info@streamsyncresearch.com

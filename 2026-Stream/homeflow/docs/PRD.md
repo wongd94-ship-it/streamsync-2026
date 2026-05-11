@@ -1,12 +1,12 @@
 # Product Requirements Document (PRD)
-## Project: HomeFlow
+## Project: Streamsync
 
 ---
 
 ## PROJECT CONTEXT
-**Project Name:** HomeFlow  
-**Course:** CS342 – Building for Digital Health  
-**Team:** Stream Team (Team 3)  
+**Project Name:** Streamsync  
+**Sponsor:** Streamsync Research Consortium (multi-center)  
+**Principal Investigator:** Daniel Wong, MD  
 **Platform:** iOS-first (React Native / Expo), cross-platform where feasible  
 
 **Tech Stack:**
@@ -141,7 +141,7 @@ Success for this project will be evaluated by:
 - Privacy-first defaults appropriate for research use.  
 - No real-time clinical alerts or treatment recommendations.  
 - iOS HealthKit limitations acknowledged (e.g., delayed syncs).  
-- Demo-safe and prototype-grade implementations acceptable for CS342.
+- Demo-safe and prototype-grade implementations acceptable for the pilot phase.
 
 ---
 
@@ -162,7 +162,7 @@ Success for this project will be evaluated by:
 ---
 
 ## ASSUMPTIONS & CONSTRAINTS
-- This is a research prototype developed for CS342.  
+- This is a research pilot study run by the Streamsync Research Consortium.  
 - Backend infrastructure may be simulated or partially stubbed.  
 - Data collected is not used for clinical care.  
 - AI-generated code must strictly adhere to this PRD.  
