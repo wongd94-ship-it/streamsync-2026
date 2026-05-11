@@ -421,6 +421,65 @@ export async function confirmPathwayChange(
   logger.info("confirmPathwayChange: applied", {participantId, newPathway, confirmer});
 }
 
+// ─── withdrawParticipant ─────────────────────────────────────────────────────
+//
+// Researcher-initiated withdrawal of a participant from a study. Flips
+// `status` to "withdrawn" on both patients/{id} and users/{uid} (when the
+// account has been claimed) and records who withdrew them and why. Idempotent —
+// re-calling on an already-withdrawn record updates `withdrawnAt` and reason
+// rather than erroring. We deliberately do NOT delete any data: throne_sessions,
+// hk_*, ipss_scores etc. all remain readable for the research record.
+
+export interface WithdrawParticipantContext {
+  researcherUid: string;
+}
+
+export async function withdrawParticipant(
+  db: admin.firestore.Firestore,
+  participantId: string,
+  reason: string | null,
+  ctx: WithdrawParticipantContext,
+): Promise<{participantId: string; firebaseUid: string | null; participantStatus: string}> {
+  if (!participantId) throw new ValidationError("participantId is required");
+  const trimmedReason = typeof reason === "string" ? reason.trim().slice(0, 500) : null;
+
+  const ref = db.collection("patients").doc(participantId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new ValidationError(`patients/${participantId} does not exist`);
+  }
+  const data = snap.data() ?? {};
+  const firebaseUid: string | null = (typeof data.userId === "string" && data.userId) ?
+    data.userId :
+    (typeof data.firebaseUid === "string" && data.firebaseUid ? data.firebaseUid : null);
+
+  const now = new Date().toISOString();
+  const batch = db.batch();
+  batch.set(ref, {
+    status: "withdrawn",
+    withdrawnAt: now,
+    withdrawnBy: ctx.researcherUid,
+    withdrawalReason: trimmedReason,
+    updatedAt: now,
+  }, {merge: true});
+
+  // Mirror to users/{uid} so the participant detail surface in the dashboard
+  // reflects the withdrawal even if the dashboard reads from users first.
+  if (firebaseUid) {
+    batch.set(db.collection("users").doc(firebaseUid), {
+      status: "withdrawn",
+      withdrawnAt: now,
+      withdrawnBy: ctx.researcherUid,
+      updatedAt: now,
+    }, {merge: true});
+  }
+  await batch.commit();
+  logger.info("withdrawParticipant: applied", {
+    participantId, firebaseUid, researcherUid: ctx.researcherUid, hasReason: !!trimmedReason,
+  });
+  return {participantId, firebaseUid, participantStatus: "withdrawn"};
+}
+
 // ─── Exports for onRequest wrappers (see index.ts) ───────────────────────────
 
 export {ValidationError};

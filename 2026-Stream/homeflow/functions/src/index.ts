@@ -34,6 +34,7 @@ import {
   claimParticipant as claimParticipantImpl,
   requestPathwayChange as requestPathwayChangeImpl,
   confirmPathwayChange as confirmPathwayChangeImpl,
+  withdrawParticipant as withdrawParticipantImpl,
   ValidationError,
 } from "./participant";
 import {
@@ -631,6 +632,36 @@ export const requestPathwayChange = onRequest(async (req, res) => {
       "participant";
     await requestPathwayChangeImpl(admin.firestore(), participantId, to, {uid, kind});
     res.status(200).json({status: "ok"});
+  } catch (err) {
+    sendValidationError(res, err);
+  }
+});
+
+/**
+ * Researcher withdraws a participant from the study. Sets status="withdrawn"
+ * on both patients/{id} and users/{uid} (when claimed), records actor + reason.
+ * No data is deleted — voids, HK samples, IPSS scores all remain. Roster
+ * cards move to the Withdrawn column on next dashboard refresh.
+ */
+export const withdrawParticipant = onRequest(async (req, res) => {
+  if (setCorsHeaders(req, res)) return;
+  if (req.method !== "POST") {
+    res.status(405).send("Method not allowed");
+    return;
+  }
+  try {
+    const researcherUid = await requireResearcherUid(req);
+    const participantId = typeof req.body?.participantId === "string" ?
+      req.body.participantId.trim() :
+      "";
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : null;
+    const result = await withdrawParticipantImpl(
+      admin.firestore(),
+      participantId,
+      reason,
+      {researcherUid},
+    );
+    res.status(200).json({status: "ok", ...result});
   } catch (err) {
     sendValidationError(res, err);
   }
