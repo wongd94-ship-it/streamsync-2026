@@ -22,6 +22,7 @@ import { saveSurgeryDate, saveStudyTimeline } from '@/src/services/throneFiresto
 import { useAppTheme, type AppearanceMode } from '@/lib/theme/ThemeContext';
 import { FontSize, FontWeight } from '@/lib/theme/typography';
 import { StanfordColors } from '@/constants/theme';
+import { LiquidGlassBackdrop } from '@/components/ui/LiquidGlassBackdrop';
 import { resyncHistoricalHealthKit, type BackfillProgress } from '@/src/services/healthkitSync';
 
 // Same lazy-load pattern used by the eligibility screen so the calendar is
@@ -204,7 +205,9 @@ export default function ProfileScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: c.background }]} edges={['top']}>
+    <View style={[styles.container, { backgroundColor: c.background }]}>
+      <LiquidGlassBackdrop variant="default" />
+      <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -597,6 +600,7 @@ export default function ProfileScreen() {
           The per-type status matrix (with iOS read-permission-quirk copy)
           lives at app/permissions-status.tsx. */}
     </SafeAreaView>
+    </View>
   );
 }
 

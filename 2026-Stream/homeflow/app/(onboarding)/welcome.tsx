@@ -10,23 +10,30 @@ import {
   View,
   Text,
   StyleSheet,
-  useColorScheme,
   Animated,
+  Image,
   TouchableOpacity,
 } from 'react-native';
 import { useRouter, Href } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Colors, StanfordColors, Spacing } from '@/constants/theme';
+import { StanfordColors, Spacing } from '@/constants/theme';
 import { STUDY_INFO } from '@/lib/constants';
 import { OnboardingService } from '@/lib/services/onboarding-service';
 import { ContinueButton } from '@/components/onboarding';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { FontSize, FontWeight } from '@/lib/theme/typography';
+import { LiquidGlassBackdrop } from '@/components/ui/LiquidGlassBackdrop';
+import { LiquidGlassCard } from '@/components/ui/LiquidGlassCard';
+import { LGColors } from '@/lib/theme/liquidGlass';
+import { useAppTheme } from '@/lib/theme/ThemeContext';
 
 export default function WelcomeScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const colors = Colors[colorScheme ?? 'light'];
+  const { theme } = useAppTheme();
+  const { isDark } = theme;
+  const ink = isDark ? LGColors.darkInk : LGColors.ink;
+  const ink2 = isDark ? LGColors.darkInk2 : LGColors.ink2;
+  const ink3 = isDark ? LGColors.darkInk3 : LGColors.ink3;
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -63,88 +70,101 @@ export default function WelcomeScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={styles.content}>
-        <Animated.View
-          style={[
-            styles.iconContainer,
-            {
-              opacity: fadeAnim,
-              transform: [{ scale: iconScale }],
-            },
-          ]}
-        >
-          <View style={styles.iconBackground}>
-            <IconSymbol name={'heart.fill' as any} size={64} color={StanfordColors.cardinal} />
-          </View>
-        </Animated.View>
+    <View style={styles.container}>
+      <LiquidGlassBackdrop variant="welcome" />
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.content}>
+          <Animated.View
+            style={[
+              styles.iconContainer,
+              {
+                opacity: fadeAnim,
+                transform: [{ scale: iconScale }],
+              },
+            ]}
+          >
+            <Image
+              source={require('@/assets/images/icon.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </Animated.View>
 
-        <Animated.View
-          style={{
-            opacity: fadeAnim,
-            transform: [{ translateY: slideAnim }],
-          }}
-        >
-          <Text style={[styles.title, { color: colors.text }]}>
-            Welcome to StreamSync
-          </Text>
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.descriptionContainer,
-            {
+          <Animated.View
+            style={{
               opacity: fadeAnim,
               transform: [{ translateY: slideAnim }],
-            },
-          ]}
-        >
-          <Text style={[styles.description, { color: colors.text }]}>
-            Thank you for your interest in the {STUDY_INFO.name}. This app will help us
-            understand how voiding patterns and physical activity predict voiding
-            etiology and procedural success in men with BPH.
-          </Text>
+              alignItems: 'center',
+            }}
+          >
+            <Text style={[styles.title, { color: ink }]}>StreamSync</Text>
+            <Text style={[styles.tagline, { color: ink2 }]}>
+              A research study to determine how home uroflow and daily activity are related to voiding dysfunction.
+            </Text>
+          </Animated.View>
 
-          <View style={styles.features}>
-            <FeatureItem
-              icon="waveform.path.ecg"
-              title="Passive Monitoring"
-              description="Track activity and sleep with your Apple Watch"
-              colors={colors}
-            />
-            <FeatureItem
-              icon="chart.line.uptrend.xyaxis"
-              title="Personalized Insights"
-              description="Review your study data and progress in one place"
-              colors={colors}
-            />
-            <FeatureItem
-              icon="lock.shield"
-              title="Privacy First"
-              description="Your data is encrypted and protected"
-              colors={colors}
-            />
-          </View>
+          <Animated.View
+            style={[
+              styles.descriptionContainer,
+              {
+                opacity: fadeAnim,
+                transform: [{ translateY: slideAnim }],
+              },
+            ]}
+          >
+            <LiquidGlassCard borderRadius={22} style={styles.callout}>
+              <View style={styles.calloutRow}>
+                <View style={styles.calloutIconBox}>
+                  <View style={styles.calloutIconCorner} />
+                  <IconSymbol name="sparkles" size={22} color="#FFFFFF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.calloutTitle, { color: ink }]}>
+                    Most of this is automatic
+                  </Text>
+                  <Text style={[styles.calloutBody, { color: ink2 }]}>
+                    You{"'"}ll only need a few minutes a week.
+                  </Text>
+                </View>
+              </View>
+            </LiquidGlassCard>
+
+            <View style={styles.features}>
+              <FeatureItem
+                icon="waveform.path.ecg"
+                title="Passive Monitoring"
+                description="Track activity and sleep with your Apple Watch"
+                ink={ink}
+                ink2={ink2}
+              />
+              <FeatureItem
+                icon="lock.shield"
+                title="Privacy First"
+                description="Your data is encrypted and protected"
+                ink={ink}
+                ink2={ink2}
+              />
+            </View>
+          </Animated.View>
+        </View>
+
+        <Animated.View style={[styles.footer, { opacity: fadeAnim }]}>
+          <Text style={[styles.footerText, { color: ink3 }]}>
+            The next few screens will check your eligibility and collect some basic information.
+          </Text>
+          <ContinueButton title="Get Started" onPress={handleContinue} />
+          <TouchableOpacity
+            onPress={() => router.push('/(onboarding)/sign-in' as Href)}
+            style={styles.signInButton}
+            accessibilityRole="button"
+          >
+            <Text style={[styles.signInText, { color: ink2 }]}>
+              Already have an account? <Text style={styles.signInLink}>Sign In</Text>
+            </Text>
+          </TouchableOpacity>
         </Animated.View>
-      </View>
-
-      <Animated.View style={[styles.footer, { opacity: fadeAnim }]}>
-        <Text style={[styles.footerText, { color: colors.icon }]}>
-          The next few screens will check your eligibility and collect some basic information.
-        </Text>
-        <ContinueButton title="Get Started" onPress={handleContinue} />
-        <TouchableOpacity
-          onPress={() => router.push('/(onboarding)/sign-in' as Href)}
-          style={styles.signInButton}
-          accessibilityRole="button"
-        >
-          <Text style={[styles.signInText, { color: colors.text }]}>
-            Already have an account? <Text style={styles.signInLink}>Sign In</Text>
-          </Text>
-        </TouchableOpacity>
-      </Animated.View>
-
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
 
@@ -152,40 +172,31 @@ function FeatureItem({
   icon,
   title,
   description,
-  colors,
+  ink,
+  ink2,
 }: {
   icon: string;
   title: string;
   description: string;
-  colors: typeof Colors.light;
+  ink: string;
+  ink2: string;
 }) {
-  const colorScheme = useColorScheme();
-
   return (
     <View style={styles.featureItem}>
-      <View
-        style={[
-          styles.featureIcon,
-          {
-            backgroundColor:
-              colorScheme === 'dark' ? 'rgba(140, 21, 21, 0.2)' : 'rgba(140, 21, 21, 0.1)',
-          },
-        ]}
-      >
-        <IconSymbol name={icon as any} size={24} color={StanfordColors.cardinal} />
+      <View style={styles.featureIcon}>
+        <IconSymbol name={icon as any} size={22} color={StanfordColors.cardinal} />
       </View>
       <View style={styles.featureText}>
-        <Text style={[styles.featureTitle, { color: colors.text }]}>{title}</Text>
-        <Text style={[styles.featureDescription, { color: colors.icon }]}>{description}</Text>
+        <Text style={[styles.featureTitle, { color: ink }]}>{title}</Text>
+        <Text style={[styles.featureDescription, { color: ink2 }]}>{description}</Text>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
+  safeArea: { flex: 1 },
   content: {
     flex: 1,
     paddingHorizontal: Spacing.screenHorizontal,
@@ -195,28 +206,70 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.lg,
   },
-  iconBackground: {
-    width: 100,
-    height: 100,
-    borderRadius: 24,
-    backgroundColor: 'rgba(140, 21, 21, 0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  logo: {
+    width: 132,
+    height: 132,
+    borderRadius: 30,
+    shadowColor: LGColors.sea,
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.28,
+    shadowRadius: 24,
   },
   title: {
-    fontSize: FontSize.display,
-    fontWeight: FontWeight.bold,
+    fontSize: 44,
+    fontWeight: '700',
     textAlign: 'center',
-    marginBottom: 8,
+    letterSpacing: -1.2,
+    marginBottom: 12,
+  },
+  tagline: {
+    fontSize: 18,
+    fontWeight: '500',
+    textAlign: 'center',
+    lineHeight: 25,
+    letterSpacing: -0.2,
+    paddingHorizontal: 8,
+    marginBottom: Spacing.xl,
   },
   descriptionContainer: {
     flex: 1,
+    gap: 18,
   },
-  description: {
-    fontSize: FontSize.headline,
-    lineHeight: 24,
-    textAlign: 'center',
-    marginBottom: Spacing.xl,
+  callout: {
+    padding: 16,
+  },
+  calloutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  calloutIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: LGColors.peach,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  calloutIconCorner: {
+    position: 'absolute',
+    top: -10,
+    right: -10,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: LGColors.peachLight,
+    opacity: 0.7,
+  },
+  calloutTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  calloutBody: {
+    fontSize: 14,
+    marginTop: 2,
   },
   features: {
     gap: Spacing.md,
@@ -226,23 +279,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   featureIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: LGColors.seaTint,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: Spacing.md,
   },
-  featureText: {
-    flex: 1,
-  },
+  featureText: { flex: 1 },
   featureTitle: {
-    fontSize: FontSize.subhead,
-    fontWeight: FontWeight.semibold,
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: -0.2,
     marginBottom: 2,
   },
   featureDescription: {
-    fontSize: FontSize.footnote,
+    fontSize: 14,
+    lineHeight: 19,
   },
   footer: {
     paddingHorizontal: Spacing.screenHorizontal,
@@ -259,10 +313,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   signInText: {
-    fontSize: FontSize.subhead,
+    fontSize: 15,
   },
   signInLink: {
-    color: StanfordColors.cardinal,
-    fontWeight: FontWeight.semibold,
+    color: LGColors.sea,
+    fontWeight: '700',
   },
 });

@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { StanfordColors, Colors } from '@/constants/theme';
 import { FontSize, FontWeight } from '@/lib/theme/typography';
+import { LGShadowStrong } from '@/lib/theme/liquidGlass';
 
 interface ContinueButtonProps {
   title?: string;
@@ -61,12 +62,13 @@ export function ContinueButton({
       style={[
         styles.button,
         variant === 'text' && styles.textButton,
+        variant === 'primary' && !isDisabled && LGShadowStrong,
         { backgroundColor: getBackgroundColor() },
         style,
       ]}
       onPress={onPress}
       disabled={isDisabled}
-      activeOpacity={0.8}
+      activeOpacity={0.86}
     >
       {loading ? (
         <ActivityIndicator
@@ -82,17 +84,18 @@ export function ContinueButton({
 
 const styles = StyleSheet.create({
   button: {
-    height: 52,
-    borderRadius: 14,
+    height: 64,
+    borderRadius: 32,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: 28,
   },
   textButton: {
-    height: 44,
+    height: 48,
   },
   text: {
-    fontSize: FontSize.headline,
+    fontSize: 19,
     fontWeight: FontWeight.semibold,
+    letterSpacing: -0.3,
   },
 });

@@ -10,6 +10,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LiquidGlassBackdrop } from '@/components/ui/LiquidGlassBackdrop';
 import {
   collection,
   limit,
@@ -227,7 +228,9 @@ function HealthContent() {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: c.background }]} edges={['top']}>
+    <View style={[styles.container, { backgroundColor: c.background }]}>
+      <LiquidGlassBackdrop variant="home" />
+      <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -343,7 +346,8 @@ function HealthContent() {
 
         <View style={styles.spacerBottom} />
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
 

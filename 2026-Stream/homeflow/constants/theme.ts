@@ -5,44 +5,50 @@
 
 import { Platform } from 'react-native';
 
-// Stanford Cardinal Red
-const tintColorLight = '#8C1515';
-const tintColorDark = '#fff';
+// Primary brand color — "sea" from the Liquid Glass palette.
+// Legacy code still imports `StanfordColors.cardinal`; we keep the name to
+// avoid a sweeping rename but map it to the new sea hue so the look stays
+// consistent app-wide.
+const tintColorLight = '#0E5A6E';
+const tintColorDark = '#5BC5D2';
 
 export const Colors = {
   light: {
-    text: '#11181C',
-    background: '#fff',
+    text: '#16242C',
+    background: '#E9E5DD',
     tint: tintColorLight,
-    icon: '#687076',
-    tabIconDefault: '#687076',
+    icon: '#6F8088',
+    tabIconDefault: '#6F8088',
     tabIconSelected: tintColorLight,
-    border: '#ddd',
-    buttonBackground: '#8C1515',
+    border: 'rgba(22,36,44,0.10)',
+    buttonBackground: tintColorLight,
     buttonText: '#fff',
   },
   dark: {
-    text: '#ECEDEE',
-    background: '#151718',
+    text: '#F2EEE5',
+    background: '#0E1518',
     tint: tintColorDark,
-    icon: '#9BA1A6',
-    tabIconDefault: '#9BA1A6',
+    icon: 'rgba(242,238,229,0.6)',
+    tabIconDefault: 'rgba(242,238,229,0.6)',
     tabIconSelected: tintColorDark,
-    border: '#444',
-    buttonBackground: '#8C1515',
+    border: 'rgba(255,255,255,0.10)',
+    buttonBackground: '#0E5A6E',
     buttonText: '#fff',
   },
 };
 
-// Stanford color palette
+// Brand palette — kept named "StanfordColors" to avoid a sweeping rename,
+// but the values are now the Liquid Glass sea / peach / ink family. The
+// "cardinal" alias remains so older imports still compile; it points at
+// the new primary sea color.
 export const StanfordColors = {
-  cardinal: '#8C1515',
-  cardinalLight: '#B83A4B',
-  cardinalDark: '#6B0F0F',
+  cardinal: '#0E5A6E',        // sea — primary
+  cardinalLight: '#2E9FA2',   // teal — secondary
+  cardinalDark: '#0A4555',    // sea-deep — pressed states
   white: '#FFFFFF',
-  black: '#2E2D29',
-  coolGrey: '#4D4F53',
-  beige: '#F5E6D3',
+  black: '#16242C',           // ink — warm near-black
+  coolGrey: '#3D525C',        // ink2
+  beige: '#E9E5DD',           // warm sand background
 };
 
 /**

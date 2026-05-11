@@ -1,7 +1,8 @@
 /**
- * Login Screen
+ * Login Screen — Liquid Glass
  *
- * Email/password login with Apple and Google social sign-in.
+ * Email/password login with Google social sign-in and a language picker.
+ * This is the first screen unauthenticated users see when launching the app.
  */
 
 import React, { useState } from 'react';
@@ -11,54 +12,38 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  useColorScheme,
   Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   ActivityIndicator,
   Image,
-  Modal,
-  Pressable,
 } from 'react-native';
 import { useRouter, Href } from 'expo-router';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, StanfordColors, Spacing } from '@/constants/theme';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Spacing } from '@/constants/theme';
 import { useAuth } from '@/hooks/use-auth';
 import { devSkipAuth } from '@/lib/dev-flags';
 import { notifyOnboardingComplete } from '@/hooks/use-onboarding-status';
 import { OnboardingService } from '@/lib/services/onboarding-service';
-
-const LANGUAGES = [
-  { code: 'en', name: 'English',    flag: '🇺🇸' },
-  { code: 'es', name: 'Español',    flag: '🇪🇸' },
-  { code: 'zh', name: '中文',        flag: '🇨🇳' },
-  { code: 'fr', name: 'Français',   flag: '🇫🇷' },
-  { code: 'de', name: 'Deutsch',    flag: '🇩🇪' },
-  { code: 'pt', name: 'Português',  flag: '🇧🇷' },
-  { code: 'ar', name: 'العربية',    flag: '🇸🇦' },
-  { code: 'hi', name: 'हिन्दी',      flag: '🇮🇳' },
-  { code: 'ko', name: '한국어',      flag: '🇰🇷' },
-  { code: 'ja', name: '日本語',      flag: '🇯🇵' },
-] as const;
-
-type LanguageCode = typeof LANGUAGES[number]['code'];
+import { LiquidGlassBackdrop } from '@/components/ui/LiquidGlassBackdrop';
+import { LiquidGlassCard } from '@/components/ui/LiquidGlassCard';
+import { LGColors, LGShadowStrong } from '@/lib/theme/liquidGlass';
+import { useAppTheme } from '@/lib/theme/ThemeContext';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const colors = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { theme } = useAppTheme();
+  const { isDark } = theme;
+  const ink = isDark ? LGColors.darkInk : LGColors.ink;
+  const ink2 = isDark ? LGColors.darkInk2 : LGColors.ink2;
+  const ink3 = isDark ? LGColors.darkInk3 : LGColors.ink3;
+  const hair = isDark ? LGColors.darkHair : LGColors.hair;
   const { signInWithEmail, signInWithGoogle, sendPasswordResetEmail } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [language, setLanguage] = useState<LanguageCode>('en');
-  const [langPickerVisible, setLangPickerVisible] = useState(false);
-  const insets = useSafeAreaInsets();
-
-  const selectedLang = LANGUAGES.find(l => l.code === language)!;
 
   const handleEmailLogin = async () => {
     const trimmedEmail = email.trim();
@@ -126,7 +111,7 @@ export default function LoginScreen() {
 
   const handleDevSkip = () => {
     devSkipAuth();
-    notifyOnboardingComplete(); // Ensure onboarding status is fresh
+    notifyOnboardingComplete();
     router.replace('/(tabs)');
   };
 
@@ -144,204 +129,200 @@ export default function LoginScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.flex}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
+    <View style={styles.container}>
+      <LiquidGlassBackdrop variant="welcome" />
+      <SafeAreaView style={styles.flex}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.flex}
         >
-          <View style={styles.header}>
-            <Text style={[styles.title, { color: colors.text }]}>Welcome Back</Text>
-            <Text style={[styles.subtitle, { color: colors.icon }]}>
-              Sign in to continue to StreamSync
-            </Text>
-          </View>
-
-          <View style={styles.form}>
-            <TextInput
-              style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
-              placeholder="Email"
-              placeholderTextColor={colors.icon}
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              textContentType="emailAddress"
-              editable={!loading}
-            />
-            <TextInput
-              style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
-              placeholder="Password"
-              placeholderTextColor={colors.icon}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              textContentType="password"
-              editable={!loading}
-            />
-
-            <TouchableOpacity
-              style={[styles.primaryButton, loading && styles.buttonDisabled]}
-              onPress={handleEmailLogin}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>Sign In</Text>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity onPress={handleForgotPassword} disabled={loading}>
-              <Text style={[styles.forgotText, { color: StanfordColors.cardinal }]}>
-                Forgot Password?
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.header}>
+              <Image
+                source={require('@/assets/images/icon.png')}
+                style={styles.logo}
+                resizeMode="contain"
+              />
+              <Text style={[styles.title, { color: ink }]}>Welcome back</Text>
+              <Text style={[styles.subtitle, { color: ink2 }]}>
+                Sign in to continue to StreamSync
               </Text>
-            </TouchableOpacity>
-          </View>
+            </View>
 
-          <View style={styles.divider}>
-            <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-            <Text style={[styles.dividerText, { color: colors.icon }]}>or</Text>
-            <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-          </View>
+            <LiquidGlassCard borderRadius={26} style={styles.formCard}>
+              <View style={styles.form}>
+                <View style={[styles.inputWrap, { borderColor: hair }]}>
+                  <Text style={[styles.inputLabel, { color: ink3 }]}>Email</Text>
+                  <TextInput
+                    style={[styles.input, { color: ink }]}
+                    placeholder="you@example.com"
+                    placeholderTextColor={ink3}
+                    value={email}
+                    onChangeText={setEmail}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    textContentType="emailAddress"
+                    editable={!loading}
+                  />
+                </View>
+                <View style={[styles.inputWrap, { borderColor: hair }]}>
+                  <Text style={[styles.inputLabel, { color: ink3 }]}>Password</Text>
+                  <TextInput
+                    style={[styles.input, { color: ink }]}
+                    placeholder="At least 8 characters"
+                    placeholderTextColor={ink3}
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                    textContentType="password"
+                    editable={!loading}
+                  />
+                </View>
 
-          <View style={styles.socialButtons}>
+                <TouchableOpacity
+                  style={[
+                    styles.primaryButton,
+                    !loading && LGShadowStrong,
+                    loading && styles.buttonDisabled,
+                  ]}
+                  onPress={handleEmailLogin}
+                  disabled={loading}
+                  activeOpacity={0.86}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.primaryButtonText}>Sign In</Text>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity onPress={handleForgotPassword} disabled={loading}>
+                  <Text style={[styles.forgotText, { color: LGColors.sea }]}>
+                    Forgot password?
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </LiquidGlassCard>
+
+            <View style={styles.divider}>
+              <View style={[styles.dividerLine, { backgroundColor: hair }]} />
+              <Text style={[styles.dividerText, { color: ink3 }]}>or</Text>
+              <View style={[styles.dividerLine, { backgroundColor: hair }]} />
+            </View>
+
             <TouchableOpacity
-              style={[styles.socialButton, { borderColor: colors.border }]}
+              style={styles.socialButton}
               onPress={handleGoogleLogin}
               disabled={loading}
+              activeOpacity={0.86}
             >
-              <Image
-                source={require('@/assets/images/google-logo.png')}
-                style={styles.googleLogo}
-              />
-              <Text style={[styles.socialButtonText, { color: colors.text }]}>
-                Sign in with Google
+              <View style={[styles.socialButtonInner, { borderColor: hair }]}>
+                <Image
+                  source={require('@/assets/images/google-logo.png')}
+                  style={styles.googleLogo}
+                />
+                <Text style={[styles.socialButtonText, { color: ink }]}>
+                  Sign in with Google
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            <View style={styles.footer}>
+              <Text style={[styles.footerText, { color: ink2 }]}>
+                Don&apos;t have an account?{' '}
               </Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.footer}>
-            <Text style={[styles.footerText, { color: colors.icon }]}>
-              Don&apos;t have an account?{' '}
-            </Text>
-            <TouchableOpacity
-              onPress={async () => {
-                // Clear the pre-auth onboarding scratchpad (step, collected
-                // eligibility/consent/medical data, permissions cache) so a
-                // new account starts onboarding from step 1 rather than
-                // resuming wherever the previous user left off on this
-                // device. Per-uid completion flags (and the global
-                // "has-ever-onboarded" flag) are preserved.
-                await OnboardingService.resetPreAuthScratchpad().catch(() => {});
-                // Navigate to the welcome leaf screen directly (not the
-                // (onboarding)/index router). The index has a guard that
-                // bounces unauth-returning-users to /(auth)/login — which
-                // is the right default behavior on app launch but wrong
-                // here because the user explicitly asked to sign up.
-                router.replace('/(onboarding)/welcome' as Href);
-              }}
-            >
-              <Text style={[styles.linkText, { color: StanfordColors.cardinal }]}>Sign Up</Text>
-            </TouchableOpacity>
-          </View>
-
-          {__DEV__ && (
-            <TouchableOpacity style={styles.devSkipButton} onPress={handleDevSkip}>
-              <Text style={styles.devSkipText}>Dev — Skip Sign In</Text>
-            </TouchableOpacity>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-
-      {/* Language selector — rendered after KeyboardAvoidingView so it sits on top */}
-      <TouchableOpacity
-        style={[styles.langButton, { top: insets.top + 8 }]}
-        onPress={() => setLangPickerVisible(true)}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.langFlag}>{selectedLang.flag}</Text>
-      </TouchableOpacity>
-
-      {/* Language picker bottom sheet */}
-      <Modal
-        visible={langPickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setLangPickerVisible(false)}
-      >
-        <Pressable
-          style={langStyles.backdrop}
-          onPress={() => setLangPickerVisible(false)}
-        >
-          <Pressable style={[langStyles.sheet, { backgroundColor: isDark ? '#1C1C1E' : '#FFFFFF' }]}>
-            <View style={[langStyles.handle, { backgroundColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)' }]} />
-            <Text style={[langStyles.title, { color: colors.icon }]}>LANGUAGE</Text>
-            {LANGUAGES.map(lang => (
               <TouchableOpacity
-                key={lang.code}
-                style={[langStyles.option, { borderBottomColor: colors.border }]}
-                onPress={() => {
-                  setLanguage(lang.code);
-                  setLangPickerVisible(false);
+                onPress={async () => {
+                  await OnboardingService.resetPreAuthScratchpad().catch(() => {});
+                  router.replace('/(onboarding)/welcome' as Href);
                 }}
-                activeOpacity={0.7}
               >
-                <Text style={langStyles.optionFlag}>{lang.flag}</Text>
-                <Text style={[langStyles.optionName, { color: colors.text }]}>{lang.name}</Text>
-                {language === lang.code && (
-                  <Text style={[langStyles.checkmark, { color: StanfordColors.cardinal }]}>✓</Text>
-                )}
+                <Text style={[styles.linkText, { color: LGColors.sea }]}>Sign Up</Text>
               </TouchableOpacity>
-            ))}
-          </Pressable>
-        </Pressable>
-      </Modal>
-    </SafeAreaView>
+            </View>
+
+            {__DEV__ && (
+              <TouchableOpacity style={styles.devSkipButton} onPress={handleDevSkip}>
+                <Text style={styles.devSkipText}>Dev — Skip Sign In</Text>
+              </TouchableOpacity>
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  flex: {
-    flex: 1,
-  },
+  container: { flex: 1 },
+  flex: { flex: 1 },
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: Spacing.screenHorizontal,
+    paddingBottom: Spacing.xl,
     justifyContent: 'center',
   },
   header: {
     marginBottom: Spacing.xl,
     alignItems: 'center',
   },
+  logo: {
+    width: 96,
+    height: 96,
+    borderRadius: 22,
+    marginBottom: Spacing.md,
+    shadowColor: LGColors.sea,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.28,
+    shadowRadius: 20,
+  },
   title: {
-    fontSize: 32,
+    fontSize: 34,
     fontWeight: '700',
+    letterSpacing: -0.8,
     marginBottom: 8,
+    textAlign: 'center',
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 17,
+    textAlign: 'center',
+    lineHeight: 23,
+    letterSpacing: -0.2,
+  },
+  formCard: {
+    padding: 18,
   },
   form: {
-    gap: Spacing.md,
+    gap: 12,
+  },
+  inputWrap: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 8,
+    backgroundColor: 'rgba(255,255,255,0.55)',
+  },
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 2,
   },
   input: {
-    height: 52,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    fontSize: 16,
+    height: 36,
+    fontSize: 17,
+    padding: 0,
+    fontWeight: '500',
   },
   primaryButton: {
-    height: 52,
-    backgroundColor: StanfordColors.cardinal,
-    borderRadius: 12,
+    height: 60,
+    backgroundColor: LGColors.sea,
+    borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 4,
@@ -351,54 +332,56 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#fff',
-    fontSize: 17,
+    fontSize: 19,
     fontWeight: '600',
+    letterSpacing: -0.3,
   },
   forgotText: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 15,
+    fontWeight: '600',
     textAlign: 'center',
-    marginTop: 4,
+    marginTop: 6,
   },
   divider: {
     flexDirection: 'row',
     alignItems: 'center',
     marginVertical: Spacing.lg,
     gap: Spacing.sm,
+    paddingHorizontal: 8,
   },
   dividerLine: {
     flex: 1,
-    height: 1,
+    height: StyleSheet.hairlineWidth,
   },
   dividerText: {
-    fontSize: 14,
+    fontSize: 12,
     textTransform: 'uppercase',
-  },
-  socialButtons: {
-    gap: Spacing.md,
-  },
-  appleButton: {
-    width: '100%',
-    height: 52,
+    fontWeight: '700',
+    letterSpacing: 1.0,
   },
   socialButton: {
-    height: 52,
-    borderWidth: 1,
-    borderRadius: 12,
+    height: 60,
+  },
+  socialButtonInner: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 12,
     paddingHorizontal: 16,
+    borderRadius: 30,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.68)',
   },
   googleLogo: {
-    width: 18,
-    height: 18,
+    width: 20,
+    height: 20,
     resizeMode: 'contain',
   },
   socialButtonText: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
+    letterSpacing: -0.2,
   },
   footer: {
     flexDirection: 'row',
@@ -410,7 +393,7 @@ const styles = StyleSheet.create({
   },
   linkText: {
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   devSkipButton: {
     marginTop: Spacing.lg,
@@ -421,66 +404,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#FF9500',
-  },
-  langButton: {
-    position: 'absolute',
-    right: 28,
-    zIndex: 10,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  langFlag: {
-    fontSize: 26,
-  },
-});
-
-const langStyles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingTop: 12,
-    paddingBottom: 40,
-  },
-  handle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    alignSelf: 'center',
-    marginBottom: 12,
-  },
-  title: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textAlign: 'center',
-    marginBottom: 8,
-    paddingHorizontal: 20,
-  },
-  option: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: 14,
-  },
-  optionFlag: {
-    fontSize: 24,
-  },
-  optionName: {
-    fontSize: 17,
-    flex: 1,
-  },
-  checkmark: {
-    fontSize: 17,
-    fontWeight: '700',
   },
 });

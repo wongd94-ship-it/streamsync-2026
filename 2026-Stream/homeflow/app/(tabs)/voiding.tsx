@@ -28,6 +28,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LiquidGlassBackdrop } from '@/components/ui/LiquidGlassBackdrop';
 import { router } from 'expo-router';
 import { useAppTheme } from '@/lib/theme/ThemeContext';
 import { FontSize, FontWeight } from '@/lib/theme/typography';
@@ -903,24 +904,29 @@ export default function VoidingScreen() {
   // ─── Empty / loading / error states ──────────────────────────────────────
   if (error && allSessions.length === 0 && !loading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: c.background }]} edges={['top']}>
-        <View style={styles.centered}>
-          <Text style={[styles.header, { color: c.textPrimary }]}>Voiding</Text>
-          <Text style={[styles.subtitle, { color: c.textSecondary }]}>{error}</Text>
-          <Pressable
-            onPress={() => { setError(null); setLoading(true); setRefreshKey(k => k + 1); }}
-            style={[styles.retryButton, { backgroundColor: c.accent }]}
-          >
-            <Text style={styles.retryText}>Retry</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
+      <View style={[styles.container, { backgroundColor: c.background }]}>
+        <LiquidGlassBackdrop variant="default" />
+        <SafeAreaView style={styles.container} edges={['top']}>
+          <View style={styles.centered}>
+            <Text style={[styles.header, { color: c.textPrimary }]}>Voiding</Text>
+            <Text style={[styles.subtitle, { color: c.textSecondary }]}>{error}</Text>
+            <Pressable
+              onPress={() => { setError(null); setLoading(true); setRefreshKey(k => k + 1); }}
+              style={[styles.retryButton, { backgroundColor: c.accent }]}
+            >
+              <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+          </View>
+        </SafeAreaView>
+      </View>
     );
   }
 
   // ─── Main render ──────────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: c.background }]} edges={['top']}>
+    <View style={[styles.container, { backgroundColor: c.background }]}>
+      <LiquidGlassBackdrop variant="default" />
+      <SafeAreaView style={styles.container} edges={['top']}>
       {loading ? (
         <View style={styles.centered}>
           <Text style={[styles.header, { color: c.textPrimary }]}>Voiding</Text>
@@ -974,7 +980,8 @@ export default function VoidingScreen() {
         onConfirm={handleSetSurgeryDate}
         c={c}
       />
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
 

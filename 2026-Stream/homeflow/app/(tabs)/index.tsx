@@ -27,6 +27,8 @@ import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { LiquidGlassCard } from '@/components/ui/LiquidGlassCard';
+import { LiquidGlassBackdrop } from '@/components/ui/LiquidGlassBackdrop';
+import { LGColors } from '@/lib/theme/liquidGlass';
 import { STORAGE_KEYS, DEV_FIREBASE_UID, DEMO_THRONE_UID } from '@/lib/constants';
 import { OnboardingService } from '@/lib/services/onboarding-service';
 import { notifyOnboardingComplete } from '@/hooks/use-onboarding-status';
@@ -593,7 +595,9 @@ export default function HomeScreen() {
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: t.background }]} edges={['top']}>
+    <View style={[styles.container, { backgroundColor: t.background }]}>
+      <LiquidGlassBackdrop variant="home" />
+      <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -606,10 +610,8 @@ export default function HomeScreen() {
           />
         }
       >
-        {/* Header */}
-        <View style={[styles.heroShell, { backgroundColor: isDark ? '#0A0A0C' : '#EAF2FF' }]}>
-          <View style={[styles.heroGlow, styles.heroGlowPrimary, { backgroundColor: isDark ? 'rgba(94,158,255,0.18)' : 'rgba(46,124,246,0.14)' }]} />
-          <View style={[styles.heroGlow, styles.heroGlowSecondary, { backgroundColor: isDark ? 'rgba(48,209,88,0.16)' : 'rgba(52,199,89,0.12)' }]} />
+        {/* Header — sits directly on the warm wash; no opaque shell. */}
+        <View style={styles.heroShell}>
           <View style={styles.headerRow}>
             <View style={styles.headerText}>
               <Text style={[styles.dateLabel, { color: t.textTertiary }]}>
@@ -637,25 +639,25 @@ export default function HomeScreen() {
               </TouchableOpacity>
             )}
           </View>
-          <LiquidGlassCard
-            borderRadius={28}
-            intensity={70}
-            accent={t.accent}
-            style={styles.heroCard}
-          >
+
+          {/* Hero "Next Event" card — sea-gradient solid surface with
+              radial light blob for the design's countdown card look. */}
+          <View style={styles.heroCardSea}>
+            <View style={styles.heroBlobTopRight} />
+            <View style={styles.heroBlobBottomLeft} />
             <View style={styles.heroCardTopRow}>
-              <Text style={[styles.heroEyebrow, { color: t.textTertiary }]}>Current pathway</Text>
-              <Text style={[styles.heroTitle, { color: t.textPrimary }]}>
+              <Text style={styles.heroEyebrowOnDark}>Current pathway</Text>
+              <Text style={styles.heroTitleOnDark}>
                 {study.pathwayLabel}
               </Text>
             </View>
-            <Text style={[styles.heroDate, { color: t.textPrimary }]}>
+            <Text style={styles.heroDateOnDark}>
               {study.primaryDate ? study.phaseLabel : 'Add a study date during onboarding'}
             </Text>
-            <Text style={[styles.heroBody, { color: t.textSecondary }]}>
+            <Text style={styles.heroBodyOnDark}>
               {study.primaryDate ? study.phaseDescription : 'Your dashboard timeline will update once your study pathway is scheduled.'}
             </Text>
-          </LiquidGlassCard>
+          </View>
         </View>
 
         <View style={styles.dateGrid}>
@@ -874,6 +876,7 @@ export default function HomeScreen() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+      </SafeAreaView>
 
       {/* Surgery Complete Modal */}
       <SurgeryCompleteModal
@@ -936,7 +939,7 @@ export default function HomeScreen() {
           </Pressable>
         </Modal>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -950,51 +953,68 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 110 },
 
   heroShell: {
-    borderRadius: 30,
-    padding: 18,
-    marginBottom: 14,
+    paddingHorizontal: 4,
+    paddingTop: 4,
+    marginBottom: 16,
+  },
+  heroCardSea: {
+    marginTop: 4,
+    padding: 22,
+    borderRadius: 32,
     overflow: 'hidden',
+    backgroundColor: LGColors.sea,
+    shadowColor: LGColors.sea,
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.32,
+    shadowRadius: 28,
+    elevation: 12,
   },
-  heroGlow: {
+  heroBlobTopRight: {
     position: 'absolute',
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-  },
-  heroGlowPrimary: {
     top: -60,
-    right: -30,
+    right: -60,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: 'rgba(255,255,255,0.16)',
   },
-  heroGlowSecondary: {
-    bottom: -100,
-    left: -40,
-  },
-  heroCard: {
-    marginTop: 10,
-    padding: 20,
+  heroBlobBottomLeft: {
+    position: 'absolute',
+    bottom: -40,
+    left: -30,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: 'rgba(245,194,141,0.30)',
   },
   heroCardTopRow: {
     marginBottom: 2,
   },
-  heroEyebrow: {
-    fontSize: FontSize.caption,
-    fontWeight: FontWeight.semibold,
+  heroEyebrowOnDark: {
+    fontSize: 13,
+    fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 4,
+    letterSpacing: 1.2,
+    color: 'rgba(255,255,255,0.78)',
+    marginBottom: 6,
   },
-  heroTitle: {
-    fontSize: FontSize.titleMedium,
-    fontWeight: FontWeight.bold,
+  heroTitleOnDark: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: -0.4,
   },
-  heroDate: {
-    fontSize: FontSize.titleLarge,
-    fontWeight: FontWeight.bold,
+  heroDateOnDark: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#FFFFFF',
     marginTop: 16,
+    letterSpacing: -0.5,
   },
-  heroBody: {
-    fontSize: FontSize.subhead,
-    lineHeight: 20,
+  heroBodyOnDark: {
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.88)',
+    lineHeight: 21,
     marginTop: 8,
   },
 

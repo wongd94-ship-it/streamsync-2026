@@ -7,20 +7,47 @@ import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAppTheme } from '@/lib/theme/ThemeContext';
 import { SupportChatBubble } from '@/components/support-chat/SupportChatBubble';
+import { LGColors } from '@/lib/theme/liquidGlass';
 
 function LiquidGlassTabBarBackground() {
   const { theme } = useAppTheme();
   const { isDark } = theme;
-  // Strong blur with a light tonal overlay produces the Liquid-Glass look.
-  const overlay = isDark ? 'rgba(18,18,20,0.55)' : 'rgba(255,255,255,0.55)';
+  // Liquid Glass dock — frosted platter with warmer overlay + hairline
+  // specular edge so it reads as floating over the colored backdrop.
+  const overlay = isDark
+    ? 'rgba(22,28,32,0.62)'
+    : 'rgba(255,255,255,0.68)';
   return (
-    <View style={StyleSheet.absoluteFill}>
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
       <BlurView
-        intensity={80}
+        intensity={90}
         tint={isDark ? 'dark' : 'light'}
         style={StyleSheet.absoluteFill}
       />
       <View style={[StyleSheet.absoluteFill, { backgroundColor: overlay }]} />
+      <View
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: StyleSheet.hairlineWidth * 2,
+          backgroundColor: isDark
+            ? 'rgba(255,255,255,0.10)'
+            : 'rgba(255,255,255,0.85)',
+        }}
+      />
+      <View
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          borderColor: LGColors.hair,
+        }}
+      />
     </View>
   );
 }

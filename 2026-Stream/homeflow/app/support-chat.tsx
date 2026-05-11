@@ -26,6 +26,7 @@ import {
   Easing,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LiquidGlassBackdrop } from '@/components/ui/LiquidGlassBackdrop';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAppTheme } from '@/lib/theme/ThemeContext';
@@ -282,7 +283,9 @@ export default function SupportChatScreen() {
   const banner = bannerLabel(context);
 
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: c.background }]} edges={['top', 'left', 'right']}>
+    <View style={[styles.root, { backgroundColor: c.background }]}>
+      <LiquidGlassBackdrop variant="chat" />
+      <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
       {/* Top nav */}
       <View style={[styles.navBar, { backgroundColor: c.card, borderBottomColor: c.separator }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.navBack} hitSlop={12}>
@@ -450,7 +453,8 @@ export default function SupportChatScreen() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
 

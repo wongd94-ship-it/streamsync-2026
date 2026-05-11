@@ -28,9 +28,12 @@ import {
   type ActiveChatStatus,
 } from '@/lib/services/support-chat-service';
 import { useAuth } from '@/hooks/use-auth';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { LGColors } from '@/lib/theme/liquidGlass';
 
-const ACCENT = '#22D3EE';
-const ACCENT_DARK = '#0891B2';
+// Sea-teal Liquid Glass bubble — sparkle icon, layered specular highlight.
+const SEA = LGColors.sea;
+const TEAL = LGColors.teal;
 
 interface Props {
   /**
@@ -113,7 +116,7 @@ export function SupportChatBubble({ visible = true, bottomOffset = 12 }: Props) 
       >
         <TouchableOpacity
           onPress={handlePress}
-          activeOpacity={0.8}
+          activeOpacity={0.86}
           style={styles.button}
           accessibilityRole="button"
           accessibilityLabel={
@@ -122,7 +125,23 @@ export function SupportChatBubble({ visible = true, bottomOffset = 12 }: Props) 
               : 'StreamSync Support'
           }
         >
-          <Text style={styles.icon}>💬</Text>
+          {/* Layered gradient — teal corner over sea base for the design's
+              sea→teal diagonal wash, plus a top specular highlight. */}
+          <View style={[StyleSheet.absoluteFillObject, styles.tealCorner]} />
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 1,
+              backgroundColor: 'rgba(255,255,255,0.32)',
+              borderTopLeftRadius: 28,
+              borderTopRightRadius: 28,
+            }}
+          />
+          <IconSymbol name="sparkles" size={26} color="#FFFFFF" />
           {showBadge && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>
@@ -156,23 +175,29 @@ const styles = StyleSheet.create({
     zIndex: 12,
   },
   button: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: ACCENT_DARK,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: SEA,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
-    borderWidth: 1,
-    borderColor: ACCENT,
+    overflow: 'hidden',
+    shadowColor: SEA,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.36,
+    shadowRadius: 14,
+    elevation: 10,
   },
-  icon: {
-    fontSize: 26,
-    color: '#fff',
+  tealCorner: {
+    backgroundColor: TEAL,
+    opacity: 0.55,
+    top: -20,
+    right: -20,
+    bottom: undefined,
+    left: undefined,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
   },
   badge: {
     position: 'absolute',

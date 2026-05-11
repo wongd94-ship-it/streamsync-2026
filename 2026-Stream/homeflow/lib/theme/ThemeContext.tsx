@@ -49,32 +49,35 @@ interface ThemeContextValue {
 // Tokens
 // ---------------------------------------------------------------------------
 
+// Liquid Glass palette — warm-cool wash with sea-deep brand accent.
+// The original iOS-system palette was electric and clinical; this one is
+// calmer, easier on aging eyes, and matches the design bundle's spec.
 const lightColors: ThemeColors = {
-  background: '#F2F2F7',        // systemGroupedBackground
-  card: '#FFFFFF',               // secondarySystemGroupedBackground
-  textPrimary: '#000000',        // label
-  textSecondary: '#3C3C43',      // secondaryLabel
-  textTertiary: '#3C3C4399',     // tertiaryLabel
-  separator: '#3C3C4333',        // separator
-  accent: '#2E7CF6',             // warmed systemBlue — less electric
-  secondaryFill: '#78788033',    // secondarySystemFill
-  semanticSuccess: '#34C759',    // systemGreen
-  semanticWarning: '#FF9500',    // systemOrange
-  semanticError: '#FF3B30',      // systemRed
+  background: '#E9E5DD',        // sand-warm wash (was systemGroupedBackground)
+  card: '#FFFFFF',               // glass surface base (overlay handles tint)
+  textPrimary: '#16242C',        // ink — warm near-black
+  textSecondary: '#3D525C',      // ink2
+  textTertiary: '#6F8088',       // ink3
+  separator: 'rgba(22,36,44,0.10)',
+  accent: '#0E5A6E',             // sea — primary brand action
+  secondaryFill: 'rgba(14,90,110,0.10)',
+  semanticSuccess: '#2F7D5A',    // grounded green
+  semanticWarning: '#C68A1F',    // amber
+  semanticError: '#B23B3B',      // warm red
 };
 
 const darkColors: ThemeColors = {
-  background: '#000000',         // systemGroupedBackground (dark)
-  card: '#1C1C1E',               // secondarySystemGroupedBackground (dark)
-  textPrimary: '#FFFFFF',
-  textSecondary: '#EBEBF5',
-  textTertiary: '#EBEBF599',
-  separator: '#54545899',
-  accent: '#5E9EFF',             // warmed systemBlue — softer
-  secondaryFill: '#78788052',
-  semanticSuccess: '#30D158',    // systemGreen
-  semanticWarning: '#FF9F0A',    // systemOrange
-  semanticError: '#FF453A',      // systemRed
+  background: '#0E1518',         // graphite-warm (was pitch black)
+  card: '#1C2226',               // glass surface base (overlay handles tint)
+  textPrimary: '#F2EEE5',        // warm white
+  textSecondary: 'rgba(242,238,229,0.78)',
+  textTertiary: 'rgba(242,238,229,0.52)',
+  separator: 'rgba(255,255,255,0.10)',
+  accent: '#5BC5D2',             // sea, lifted for dark mode contrast
+  secondaryFill: 'rgba(255,255,255,0.10)',
+  semanticSuccess: '#5BB382',    // green, lifted
+  semanticWarning: '#F0BA62',    // amber, lifted
+  semanticError: '#E07A6E',      // warm red, lifted
 };
 
 // ---------------------------------------------------------------------------
