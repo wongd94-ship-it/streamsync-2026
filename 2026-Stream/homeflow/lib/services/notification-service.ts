@@ -241,6 +241,45 @@ async function stopRepeatingReminder(source: 'healthkit' | 'throne'): Promise<vo
   await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
 }
 
+/**
+ * Cancel every locally-scheduled adherence / setup reminder this service
+ * has ever registered. Call this on sign-out — the repeating Apple Watch /
+ * Throne reminders are registered against the OS notification queue with
+ * `repeats: true`, so without an explicit cancel they keep firing every 4
+ * hours even after the user has logged out and the auth-gated foreground
+ * tick has stopped scheduling new ones.
+ *
+ * Also wipes the AsyncStorage "last fired" timestamps so a different user
+ * signing in on the same device doesn't inherit dedup state from the
+ * previous account.
+ */
+export async function cancelAllSyncReminders(): Promise<void> {
+  // Cancel every notification this service has identifiers for, including
+  // the per-source immediate variants that fireImmediateReminder uses.
+  const ids = [
+    NOTIFICATION_IDS.healthkit,
+    NOTIFICATION_IDS.throne,
+    NOTIFICATION_IDS.throneArrival,
+    NOTIFICATION_IDS.throneSetupReminder,
+    NOTIFICATION_IDS.healthkitRepeat,
+    NOTIFICATION_IDS.throneRepeat,
+    `${NOTIFICATION_IDS.healthkit}-immediate`,
+    `${NOTIFICATION_IDS.throne}-immediate`,
+  ];
+  await Promise.all(
+    ids.map((id) =>
+      Notifications.cancelScheduledNotificationAsync(id).catch(() => {}),
+    ),
+  );
+
+  // Reset the dedup keys so a new account doesn't inherit "already fired
+  // recently" state from the previous sign-in.
+  await Promise.all([
+    AsyncStorage.removeItem(STORAGE_KEYS.LAST_NOTIFICATION_HEALTHKIT).catch(() => {}),
+    AsyncStorage.removeItem(STORAGE_KEYS.LAST_NOTIFICATION_THRONE).catch(() => {}),
+  ]);
+}
+
 async function fireImmediateReminder(
   source: StaleSyncSource,
   elapsedMs: number | null,
