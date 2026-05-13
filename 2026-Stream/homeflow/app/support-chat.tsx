@@ -503,6 +503,7 @@ export default function SupportChatScreen() {
   // it to stay above the keyboard without lag.
   const inputBarBottomPad = Math.max(insets.bottom, 8);
 
+  return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <LiquidGlassBackdrop variant="chat" />
       <SafeAreaView style={styles.root} edges={['left', 'right']}>
