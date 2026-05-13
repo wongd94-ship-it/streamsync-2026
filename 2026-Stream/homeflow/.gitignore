@@ -47,3 +47,5 @@ functions/lib/
 
 expo-env.d.ts
 # @end expo-cli
+# Local mirror of Firebase Hosting's /__/firebase/init.js — never commit (contains web SDK config)
+dashboard-public/__/
