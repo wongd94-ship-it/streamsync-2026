@@ -25,17 +25,66 @@ const NOTIFICATION_IDS = {
   throne: 'homeflow-throne-reminder',
   throneArrival: 'homeflow-throne-arrival',
   throneSetupReminder: 'homeflow-throne-setup-reminder',
-  // Recurring 4-hour pings while a device is missing data. Cancelled the
-  // moment fresh data is detected so the user isn't pestered after the
-  // problem self-resolves.
-  healthkitRepeat: 'homeflow-healthkit-repeat',
-  throneRepeat: 'homeflow-throne-repeat',
 } as const;
 
-type DataSource = keyof typeof NOTIFICATION_IDS;
-// Subset of DataSource that carries user-facing copy. The other notification
-// IDs (throneArrival, throneSetupReminder, healthkitRepeat, throneRepeat)
-// either compose their content inline or piggyback on these via lookup.
+// Quiet hours — no sync-reminder notifications fire between these clock hours
+// in the user's local time zone. Earlier versions used a `repeats: true`
+// TIME_INTERVAL trigger that fired every 4 hours regardless of clock time,
+// which woke users up at 2am / 6am with stale reminders. We now pre-schedule
+// a finite series of specific-datetime fires that all land inside the
+// waking window; on each app foreground we cancel + reschedule using the
+// freshest sync state.
+const QUIET_START_HOUR = 22; // 10pm local
+const QUIET_END_HOUR = 7; // 7am local
+const REPEAT_INTERVAL_HOURS = 4;
+// How many future reminders to pre-schedule. With a 4h spacing and a 15h
+// waking window (07:00–22:00), that's ~4 fires/day. Twelve covers ~3 days
+// of disuse before the user must open the app to refresh the schedule.
+const REPEAT_PRE_SCHEDULE_COUNT = 12;
+
+function isQuietHour(hour: number): boolean {
+  if (QUIET_START_HOUR > QUIET_END_HOUR) {
+    // Wraps around midnight (the usual case: 22 → 7).
+    return hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR;
+  }
+  // Non-wrapping window (e.g. quiet 1pm–4pm — kept for completeness).
+  return hour >= QUIET_START_HOUR && hour < QUIET_END_HOUR;
+}
+
+/**
+ * Generate the next N specific-datetime fires during waking hours, starting
+ * `intervalHours` from `now` and spaced `intervalHours` apart. Any candidate
+ * that lands inside the quiet-hours window is bumped forward to the next
+ * QUIET_END_HOUR. The series is purely additive — we never schedule into
+ * the past.
+ */
+function nextWakingFires(now: Date, count: number, intervalHours: number): Date[] {
+  const fires: Date[] = [];
+  let candidate = new Date(now.getTime() + intervalHours * 60 * 60 * 1000);
+  while (fires.length < count) {
+    const hour = candidate.getHours();
+    if (isQuietHour(hour)) {
+      // Bump candidate to QUIET_END_HOUR on the next eligible day.
+      const next = new Date(candidate);
+      if (hour >= QUIET_START_HOUR) next.setDate(next.getDate() + 1);
+      next.setHours(QUIET_END_HOUR, 0, 0, 0);
+      candidate = next;
+      continue;
+    }
+    fires.push(new Date(candidate));
+    candidate = new Date(candidate.getTime() + intervalHours * 60 * 60 * 1000);
+  }
+  return fires;
+}
+
+function repeatIdFor(source: StaleSyncSource, index: number): string {
+  return `homeflow-${source}-repeat-${index}`;
+}
+
+// The two stale-sync sources that share notification copy. Other notification
+// IDs (`throneArrival`, `throneSetupReminder`) compose their content inline
+// and don't go through `NOTIFICATION_CONTENT`. Repeating reminders are tracked
+// via dynamic IDs built by `repeatIdFor(source, index)`.
 type StaleSyncSource = 'healthkit' | 'throne';
 
 Notifications.setNotificationHandler({
@@ -184,61 +233,83 @@ async function scheduleReminder(
 }
 
 /**
- * Start a 4-hour-repeating local reminder for the given data source. Idempotent:
- * cancels any existing repeating notification with the same id before
- * rescheduling, so calling this on every foreground is safe.
+ * Schedule a 4-hour-cadence series of local reminders for `source`, confined
+ * to waking hours (07:00–22:00 local). Each entry is a discrete DATE-
+ * triggered notification with a unique id (`homeflow-<source>-repeat-N`).
+ * Idempotent: cancels every prior entry in the series before rescheduling,
+ * so calling this on every foreground is safe.
  *
- * iOS allows TIME_INTERVAL triggers with `repeats: true`. The first fire is
- * 4h from scheduling — calls to fireImmediateReminder() handle the
- * "right now" buzz.
+ * The earlier implementation used `TIME_INTERVAL` with `repeats: true`,
+ * which fired every 4 hours regardless of clock time — including 2am and
+ * 6am — and showed stale body text (the body was baked in at schedule
+ * time). This version:
+ *   - skips quiet hours entirely (no night-time buzzes), and
+ *   - computes each fire's body with its OWN projected elapsed time, so
+ *     "X hasn't synced in 30 hours" lands at hour 30, not hour 4.
+ *
+ * The user must still open the app eventually to refresh against live data
+ * (we can't introspect sync recency from a background context), but the
+ * pre-scheduled batch covers ~3 days of disuse before drying up.
  */
 async function startRepeatingReminder(
   source: StaleSyncSource,
   elapsedMs: number | null,
   thresholdHours: number,
 ): Promise<void> {
-  const id = source === 'healthkit'
-    ? NOTIFICATION_IDS.healthkitRepeat
-    : NOTIFICATION_IDS.throneRepeat;
-  await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+  // Wipe any prior entries in the series — important when the user previously
+  // had a different threshold or a different stale state.
+  await stopRepeatingReminder(source);
 
-  // The body is computed AT SCHEDULE TIME with the elapsed as of now plus
-  // 4 hours (the next fire happens 4h from scheduling). Each foreground
-  // re-runs `checkAndScheduleReminders`, which re-schedules with a fresh
-  // body — so the elapsed-time string is "as of last app foreground" plus
-  // up to 4h, not stale beyond that.
-  const projectedElapsed = elapsedMs == null ? null : elapsedMs + HOURS_4;
-  const body = NOTIFICATION_CONTENT[source].body({
-    elapsedMs: projectedElapsed,
-    thresholdHours,
-    pastThreshold: true,
-  });
+  const fires = nextWakingFires(new Date(), REPEAT_PRE_SCHEDULE_COUNT, REPEAT_INTERVAL_HOURS);
+  const nowMs = Date.now();
 
-  await Notifications.scheduleNotificationAsync({
-    identifier: id,
-    content: {
-      title: NOTIFICATION_CONTENT[source].title,
-      body,
-      data: syncAlertData('48h-alert'),
-    },
-    trigger: {
-      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-      seconds: Math.round(HOURS_4 / 1000),
-      repeats: true,
-    },
-  });
+  for (let i = 0; i < fires.length; i++) {
+    const fireAt = fires[i];
+    // Per-fire elapsed: whatever's elapsed now, plus however long until
+    // this specific fire goes off. Means each notification reflects the
+    // user's actual sync state at the time the notification appears.
+    const projectedElapsed =
+      elapsedMs == null ? null : elapsedMs + (fireAt.getTime() - nowMs);
+    const body = NOTIFICATION_CONTENT[source].body({
+      elapsedMs: projectedElapsed,
+      thresholdHours,
+      pastThreshold: true,
+    });
+
+    await Notifications.scheduleNotificationAsync({
+      identifier: repeatIdFor(source, i),
+      content: {
+        title: NOTIFICATION_CONTENT[source].title,
+        body,
+        data: syncAlertData('48h-alert'),
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: fireAt,
+      },
+    });
+  }
 }
 
 /**
- * Cancel any active 4-hour-repeating reminder for this source. Called when
- * `hasRecent*Data` flips from false → true so the user stops getting pinged
- * the moment their device starts syncing again.
+ * Cancel every entry in the repeating-reminder series for this source.
+ * Called when `hasRecent*Data` flips from false → true so the user stops
+ * getting pinged the moment their device starts syncing again, and at the
+ * top of `startRepeatingReminder` so the series stays idempotent.
+ *
+ * Also kills the legacy single-id repeating notifications from prior
+ * builds (`homeflow-<source>-repeat`, no index) so users upgrading from
+ * an older install stop receiving night-time pings even before they hit
+ * a code path that would have rescheduled them.
  */
-async function stopRepeatingReminder(source: 'healthkit' | 'throne'): Promise<void> {
-  const id = source === 'healthkit'
-    ? NOTIFICATION_IDS.healthkitRepeat
-    : NOTIFICATION_IDS.throneRepeat;
-  await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+async function stopRepeatingReminder(source: StaleSyncSource): Promise<void> {
+  const legacyId = `homeflow-${source}-repeat`;
+  await Promise.all([
+    Notifications.cancelScheduledNotificationAsync(legacyId).catch(() => {}),
+    ...Array.from({ length: REPEAT_PRE_SCHEDULE_COUNT }, (_, i) =>
+      Notifications.cancelScheduledNotificationAsync(repeatIdFor(source, i)).catch(() => {}),
+    ),
+  ]);
 }
 
 async function fireImmediateReminder(
