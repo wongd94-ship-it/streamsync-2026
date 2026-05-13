@@ -17,7 +17,9 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import { doc, getDoc } from 'firebase/firestore';
 import { auth } from '../firebase';
+import { db } from '@/src/services/firebase';
 import type { IAccountService, UserProfile } from './account-service';
 import { saveUserProfile, isOnboardingCompleteInFirestore } from '@/src/services/throneFirestore';
 import { claimParticipantRecord } from './participant-claim';
@@ -44,13 +46,34 @@ async function syncRootUserProfile(user: FirebaseUser): Promise<void> {
   const nameParts = displayName.trim().split(/\s+/).filter(Boolean);
   const normalizedEmail = user.email?.trim().toLowerCase();
 
+  // throneAccountEmail defaults to the auth email, but only when it is
+  // not already set on the user doc. A researcher-set correction (e.g.
+  // via setParticipantThroneEmail when the participant used Apple
+  // Hide-My-Email at Throne signup) must survive subsequent sign-ins —
+  // otherwise the next auth sync would silently revert it and the
+  // Throne ingestion router would stop matching the participant's
+  // sessions.
+  let throneAccountEmailToWrite: string | undefined = normalizedEmail || undefined;
+  try {
+    const snap = await getDoc(doc(db, `users/${user.uid}`));
+    const existing = snap.exists() ? (snap.data().throneAccountEmail as unknown) : undefined;
+    if (typeof existing === 'string' && existing.trim()) {
+      throneAccountEmailToWrite = undefined;
+    }
+  } catch (error) {
+    // Best-effort read — if it fails (offline, rules change, etc.) fall
+    // back to the auth-email default. The dashboard correction tool can
+    // re-apply if needed.
+    console.warn('[Auth] could not read existing throneAccountEmail; defaulting to auth email', error);
+  }
+
   await saveUserProfile(user.uid, {
     name: displayName || undefined,
     displayName: displayName || undefined,
     firstName: nameParts[0],
     lastName: nameParts.slice(1).join(' ') || undefined,
     email: user.email || undefined,
-    throneAccountEmail: normalizedEmail || undefined,
+    throneAccountEmail: throneAccountEmailToWrite,
     createdAt: user.metadata.creationTime || undefined,
   });
 }
