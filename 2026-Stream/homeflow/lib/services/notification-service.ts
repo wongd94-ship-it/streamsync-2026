@@ -37,10 +37,16 @@ const NOTIFICATION_IDS = {
 const QUIET_START_HOUR = 22; // 10pm local
 const QUIET_END_HOUR = 7; // 7am local
 const REPEAT_INTERVAL_HOURS = 4;
-// How many future reminders to pre-schedule. With a 4h spacing and a 15h
-// waking window (07:00–22:00), that's ~4 fires/day. Twelve covers ~3 days
-// of disuse before the user must open the app to refresh the schedule.
-const REPEAT_PRE_SCHEDULE_COUNT = 12;
+// How many future stale-sync reminders to pre-schedule. With 4h spacing
+// inside a 15h waking window (07:00–22:00), four entries cover one full
+// daylight cycle. Each foreground re-evaluates and reschedules. Earlier
+// versions pre-scheduled 12 (~3 days) but that meant a user who synced
+// after the schedule was created could see multiple false-positive
+// reminders before next app open — the bodies are baked in at schedule
+// time and iOS won't refresh them. One-day horizon = at most a handful
+// of false positives in the rare case the user goes a full day without
+// opening the app while their devices recover.
+const REPEAT_PRE_SCHEDULE_COUNT = 4;
 
 function isQuietHour(hour: number): boolean {
   if (QUIET_START_HOUR > QUIET_END_HOUR) {
@@ -102,18 +108,18 @@ Notifications.setNotificationHandler({
 /**
  * Per-source notification copy.
  *
- *   - `title` is fixed.
- *   - `body` is a function that receives the current sync state and
- *     produces a body string. The state has BOTH the actual time-since-
- *     last-sync (if known) AND the configured threshold, so the message
- *     can reflect whichever is the better signal:
- *       - Threshold-based (e.g. when scheduling a future reminder) → uses
- *         threshold hours.
- *       - Elapsed-based (right now / repeating fire) → uses elapsed time.
+ * `immediateBody` carries actual elapsed time and is only used for the
+ * one-shot "fire now" reminder, which we KNOW reflects current state at
+ * fire time (it's about to fire immediately). `scheduledBody` is generic
+ * and time-agnostic — used for any reminder pre-scheduled to fire later.
  *
- * Examples produced:
- *   "Your Throne hasn't synced in 3 days. Tap to get help."
- *   "Apple Watch hasn't synced in 26 hours. Tap to get help."
+ * The previous design baked an elapsed-time string into pre-scheduled
+ * reminders too, but iOS won't refresh notification bodies after schedule
+ * time. So a body that said "hasn't synced in 24 hours" would fire as-is
+ * even if the user had synced their Watch in the intervening hours — the
+ * notification lied about the user's actual state. The generic scheduled
+ * body says "Sync check" and invites the user to open the app, where the
+ * live banner shows the real freshness.
  */
 export interface SyncBodyState {
   /** Actual elapsed time since last sync, in ms. Null if unknown / never synced. */
@@ -125,6 +131,9 @@ export interface SyncBodyState {
    * hasn't fired yet — use the threshold rather than `elapsedMs`. When
    * true, the message is generated for an immediate / past-threshold
    * fire — prefer `elapsedMs` if available.
+   *
+   * @deprecated Use `immediateBody` / `scheduledBody` directly instead.
+   *   Kept for backward compat with any callers that still pass a state.
    */
   pastThreshold: boolean;
 }
@@ -143,25 +152,34 @@ function formatElapsedHours(ms: number | null): string | null {
   return `${days} day${days === 1 ? '' : 's'}, ${remHours} hour${remHours === 1 ? '' : 's'}`;
 }
 
-const NOTIFICATION_CONTENT: Record<
-  StaleSyncSource,
-  { title: string; body: (state: SyncBodyState) => string }
-> = {
+interface SourceCopy {
+  title: string;
+  /** Body for `trigger: null` reminders that fire instantly. May reference elapsed. */
+  immediateBody: (elapsedMs: number | null) => string;
+  /** Body for any reminder scheduled to fire in the future. Time-agnostic. */
+  scheduledBody: string;
+}
+
+const NOTIFICATION_CONTENT: Record<StaleSyncSource, SourceCopy> = {
   healthkit: {
-    title: 'Apple Watch not syncing',
-    body: (state) => {
-      const elapsed = state.pastThreshold ? formatElapsedHours(state.elapsedMs) : null;
-      const phrase = elapsed ?? `${state.thresholdHours} hours`;
-      return `Your Apple Watch hasn't synced in ${phrase}. Put it on to keep tracking — tap for help if you need it.`;
+    title: 'Apple Watch sync check',
+    immediateBody: (elapsedMs) => {
+      const phrase = formatElapsedHours(elapsedMs);
+      if (phrase) return `Your Apple Watch was last seen syncing ${phrase} ago. Put it on to keep tracking — tap for help.`;
+      return `We haven't seen your Apple Watch sync recently. Put it on to keep tracking — tap for help.`;
     },
+    // Truthful regardless of when iOS actually fires this. Invites the
+    // user into the app, where the live banner shows the real freshness.
+    scheduledBody: `We haven't seen your Apple Watch sync recently. Tap to check your current sync status — we'll show you the most recent data inside the app.`,
   },
   throne: {
-    title: 'Throne device reminder',
-    body: (state) => {
-      const elapsed = state.pastThreshold ? formatElapsedHours(state.elapsedMs) : null;
-      const phrase = elapsed ?? `${state.thresholdHours} hours`;
-      return `Your Throne hasn't recorded a void in ${phrase}. Use your Throne device to keep tracking — tap for help if you need it.`;
+    title: 'Throne sync check',
+    immediateBody: (elapsedMs) => {
+      const phrase = formatElapsedHours(elapsedMs);
+      if (phrase) return `Your Throne hasn't recorded a void in ${phrase}. Tap for help if you're stuck.`;
+      return `We haven't seen your Throne record a void recently. Tap for help if you're stuck.`;
     },
+    scheduledBody: `We haven't seen recent voids from your Throne. Tap to check your current sync status — we'll show you the most recent data inside the app.`,
   },
 };
 
@@ -202,36 +220,6 @@ function syncAlertData(triggerReason: '48h-alert' | '5d-alert') {
   };
 }
 
-async function scheduleReminder(
-  source: StaleSyncSource,
-  delayMs: number,
-  thresholdHours: number,
-): Promise<void> {
-  await Notifications.cancelScheduledNotificationAsync(NOTIFICATION_IDS[source]).catch(() => {});
-
-  // Future-scheduled reminder — at fire time the elapsed will equal the
-  // threshold (since we're scheduling exactly threshold-from-now). Body
-  // is generated with `pastThreshold: false` so it uses thresholdHours.
-  const body = NOTIFICATION_CONTENT[source].body({
-    elapsedMs: null,
-    thresholdHours,
-    pastThreshold: false,
-  });
-
-  await Notifications.scheduleNotificationAsync({
-    identifier: NOTIFICATION_IDS[source],
-    content: {
-      title: NOTIFICATION_CONTENT[source].title,
-      body,
-      data: syncAlertData(delayMs >= DAYS_5 ? '5d-alert' : '48h-alert'),
-    },
-    trigger: {
-      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-      seconds: Math.round(delayMs / 1000),
-    },
-  });
-}
-
 /**
  * Schedule a 4-hour-cadence series of local reminders for `source`, confined
  * to waking hours (07:00–22:00 local). Each entry is a discrete DATE-
@@ -251,36 +239,24 @@ async function scheduleReminder(
  * (we can't introspect sync recency from a background context), but the
  * pre-scheduled batch covers ~3 days of disuse before drying up.
  */
-async function startRepeatingReminder(
-  source: StaleSyncSource,
-  elapsedMs: number | null,
-  thresholdHours: number,
-): Promise<void> {
+async function startRepeatingReminder(source: StaleSyncSource): Promise<void> {
   // Wipe any prior entries in the series — important when the user previously
   // had a different threshold or a different stale state.
   await stopRepeatingReminder(source);
 
   const fires = nextWakingFires(new Date(), REPEAT_PRE_SCHEDULE_COUNT, REPEAT_INTERVAL_HOURS);
-  const nowMs = Date.now();
 
   for (let i = 0; i < fires.length; i++) {
     const fireAt = fires[i];
-    // Per-fire elapsed: whatever's elapsed now, plus however long until
-    // this specific fire goes off. Means each notification reflects the
-    // user's actual sync state at the time the notification appears.
-    const projectedElapsed =
-      elapsedMs == null ? null : elapsedMs + (fireAt.getTime() - nowMs);
-    const body = NOTIFICATION_CONTENT[source].body({
-      elapsedMs: projectedElapsed,
-      thresholdHours,
-      pastThreshold: true,
-    });
-
+    // Body is intentionally generic — iOS can't refresh it at fire time,
+    // and a time-baked body would lie if the user syncs between schedule
+    // and fire. The whole point of this notification is "open the app
+    // and you'll see the real sync status."
     await Notifications.scheduleNotificationAsync({
       identifier: repeatIdFor(source, i),
       content: {
         title: NOTIFICATION_CONTENT[source].title,
-        body,
+        body: NOTIFICATION_CONTENT[source].scheduledBody,
         data: syncAlertData('48h-alert'),
       },
       trigger: {
@@ -292,30 +268,44 @@ async function startRepeatingReminder(
 }
 
 /**
- * Cancel every entry in the repeating-reminder series for this source.
- * Called when `hasRecent*Data` flips from false → true so the user stops
- * getting pinged the moment their device starts syncing again, and at the
- * top of `startRepeatingReminder` so the series stays idempotent.
+ * Cancel EVERY scheduled stale-sync notification iOS still holds for this
+ * source, regardless of which version of the code created it:
  *
- * Also kills the legacy single-id repeating notifications from prior
- * builds (`homeflow-<source>-repeat`, no index) so users upgrading from
- * an older install stop receiving night-time pings even before they hit
- * a code path that would have rescheduled them.
+ *   - `homeflow-<source>-reminder`       — legacy safety-net (now removed)
+ *   - `homeflow-<source>-repeat`         — legacy single-id repeating loop
+ *   - `homeflow-<source>-repeat-N`       — current finite-series fires (N=0..)
+ *
+ * Called on every app foreground (regardless of current sync state) so
+ * stale pre-scheduled fires from a previous foreground or a prior build
+ * can't survive past one app open. If the data is still stale after the
+ * sweep, `startRepeatingReminder` re-schedules a fresh series.
  */
-async function stopRepeatingReminder(source: StaleSyncSource): Promise<void> {
-  const legacyId = `homeflow-${source}-repeat`;
+async function cancelAllSyncReminders(source: StaleSyncSource): Promise<void> {
+  const legacySafetyNet = NOTIFICATION_IDS[source];               // homeflow-<source>-reminder
+  const legacyRepeatLoop = `homeflow-${source}-repeat`;            // single-id v1 (no index)
+  // The v2 finite series; we cancel a generous range here (not just the
+  // current REPEAT_PRE_SCHEDULE_COUNT) so that if we ever shorten the
+  // window further, leftover entries from a longer-horizon prior install
+  // are still wiped.
+  const v2SeriesIds = Array.from({ length: 24 }, (_, i) => repeatIdFor(source, i));
   await Promise.all([
-    Notifications.cancelScheduledNotificationAsync(legacyId).catch(() => {}),
-    ...Array.from({ length: REPEAT_PRE_SCHEDULE_COUNT }, (_, i) =>
-      Notifications.cancelScheduledNotificationAsync(repeatIdFor(source, i)).catch(() => {}),
+    Notifications.cancelScheduledNotificationAsync(legacySafetyNet).catch(() => {}),
+    Notifications.cancelScheduledNotificationAsync(legacyRepeatLoop).catch(() => {}),
+    ...v2SeriesIds.map((id) =>
+      Notifications.cancelScheduledNotificationAsync(id).catch(() => {}),
     ),
   ]);
+}
+
+// Kept as an alias so existing call sites compile; `startRepeatingReminder`
+// uses it at the top to wipe before re-scheduling.
+async function stopRepeatingReminder(source: StaleSyncSource): Promise<void> {
+  await cancelAllSyncReminders(source);
 }
 
 async function fireImmediateReminder(
   source: StaleSyncSource,
   elapsedMs: number | null,
-  thresholdHours: number,
 ): Promise<void> {
   const storageKey = source === 'healthkit'
     ? STORAGE_KEYS.LAST_NOTIFICATION_HEALTHKIT
@@ -327,11 +317,9 @@ async function fireImmediateReminder(
     if (Date.now() - lastFired < HOURS_24) return;
   }
 
-  const body = NOTIFICATION_CONTENT[source].body({
-    elapsedMs,
-    thresholdHours,
-    pastThreshold: true,
-  });
+  // `trigger: null` fires right now, so a time-aware body is safe — the
+  // user reads it within seconds of the freshness check that produced it.
+  const body = NOTIFICATION_CONTENT[source].immediateBody(elapsedMs);
 
   await Notifications.scheduleNotificationAsync({
     identifier: `${NOTIFICATION_IDS[source]}-immediate`,
@@ -437,19 +425,14 @@ async function hasRecentThroneData(): Promise<{ ok: boolean; elapsedMs: number |
 
 export async function triggerTestNotification(source: StaleSyncSource): Promise<void> {
   const thresholdHours = await getSyncThresholdHours();
-  // Pretend it's been (threshold + 1)h since last sync, so the body is
-  // representative of what a real stale-sync notification looks like.
+  // Pretend it's been (threshold + 1)h since last sync — body shows the
+  // immediate-fire copy with that elapsed.
   const fakeElapsedMs = (thresholdHours + 1) * 60 * 60 * 1000;
-  const body = NOTIFICATION_CONTENT[source].body({
-    elapsedMs: fakeElapsedMs,
-    thresholdHours,
-    pastThreshold: true,
-  });
   await Notifications.scheduleNotificationAsync({
     identifier: `${NOTIFICATION_IDS[source]}-test`,
     content: {
       title: `[TEST] ${NOTIFICATION_CONTENT[source].title}`,
-      body,
+      body: NOTIFICATION_CONTENT[source].immediateBody(fakeElapsedMs),
     },
     trigger: null,
   });
@@ -596,34 +579,39 @@ export async function checkAndScheduleReminders(): Promise<void> {
   // Re-read the threshold each foreground so a researcher's tweak in the
   // dashboard takes effect within one app-resume.
   cachedThresholdHours = null;
-  const thresholdHours = await getSyncThresholdHours();
-  const thresholdMs = thresholdHours * 60 * 60 * 1000;
+  await getSyncThresholdHours(); // populates cache for the freshness checks
 
+  // STEP 1 — wipe every still-scheduled stale-sync notification for both
+  // sources, regardless of which build of the code put them there. This
+  // is the key change vs. the prior version: even when the data is
+  // currently healthy we don't keep a "safety net" reminder lurking. If
+  // pre-scheduled fires are already on iOS's queue with stale bodies
+  // (because the user synced after we scheduled), they get cleared here.
+  await Promise.all([
+    cancelAllSyncReminders('healthkit'),
+    cancelAllSyncReminders('throne'),
+  ]);
+
+  // STEP 2 — read the live freshness of both data sources.
   const [healthKitState, throneState] = await Promise.all([
     hasRecentHealthKitData(),
     hasRecentThroneData(),
   ]);
 
-  if (healthKitState.ok) {
-    // Sync is healthy — kill any active repeating ping AND schedule a
-    // canonical "first miss" one-shot reminder at +threshold from now.
-    // If the user syncs again before then, the next foreground reschedules.
-    await stopRepeatingReminder('healthkit');
-    await scheduleReminder('healthkit', thresholdMs, thresholdHours);
-  } else {
-    // Sync is stale — buzz now with the actual elapsed time AND keep
-    // buzzing every 4h until it recovers. Each foreground re-runs this
-    // path, so the elapsed-time string in the repeating notif is fresh
-    // as of the last app open.
-    await fireImmediateReminder('healthkit', healthKitState.elapsedMs, thresholdHours);
-    await startRepeatingReminder('healthkit', healthKitState.elapsedMs, thresholdHours);
+  // STEP 3 — for each source, fire ONLY if currently stale.
+  // We deliberately do NOT pre-schedule a "haven't seen sync in N hours"
+  // reminder when data is healthy; that's what produced the false-positive
+  // notifications the user reported on 2026-05-13 (notification body said
+  // "hasn't synced in 24 hours" while the chat banner correctly showed
+  // a fresh sync). When the user does go stale, they'll see the immediate
+  // fire on next app foreground AND a follow-up series during waking hours.
+  if (!healthKitState.ok) {
+    await fireImmediateReminder('healthkit', healthKitState.elapsedMs);
+    await startRepeatingReminder('healthkit');
   }
 
-  if (throneState.ok) {
-    await stopRepeatingReminder('throne');
-    await scheduleReminder('throne', thresholdMs, thresholdHours);
-  } else {
-    await fireImmediateReminder('throne', throneState.elapsedMs, thresholdHours);
-    await startRepeatingReminder('throne', throneState.elapsedMs, thresholdHours);
+  if (!throneState.ok) {
+    await fireImmediateReminder('throne', throneState.elapsedMs);
+    await startRepeatingReminder('throne');
   }
 }
