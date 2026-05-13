@@ -603,6 +603,41 @@ a{color:inherit;text-decoration:none}
   </div>
 </div>
 
+<!-- Set Throne signup email modal.
+     Used when a participant signed up to Throne with a different email
+     than their Streamsync contact email (most commonly Apple Hide-My-Email).
+     Calls setParticipantThroneEmail to update patients/{id} + users/{uid}
+     + throne_research_participants, then optionally kicks off a backfill
+     of any sessions Throne already has under the new address. -->
+<div class="modal-overlay" id="throne-email-overlay">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Throne signup email</div>
+      <button class="btn ghost sm" onclick="ssCloseSetThroneEmailModal()">Close</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:var(--ink2);line-height:1.55;margin-bottom:12px">
+        Set the email <strong id="throne-email-name" style="color:var(--ink)">—</strong> used when registering their <strong style="color:var(--ink)">Throne One</strong> device. This is the email Throne returns on every session export — used to join voids to this participant's record.
+      </div>
+      <div style="font-size:12px;color:var(--helper);line-height:1.5;margin-bottom:14px;padding:10px 12px;background:var(--surface);border-left:3px solid var(--blue)">
+        Use this when the participant signed up to Throne with a <strong style="color:var(--ink2)">different email</strong> than their Streamsync contact email. Most commonly: Apple Hide-My-Email, which produces an address like <span class="mono" style="font-size:11px">977csb86qd@privaterelay.appleid.com</span>. The contact email used for sign-in does <strong style="color:var(--ink2)">not</strong> change.
+      </div>
+      <label class="cp-field" style="margin-bottom:12px">Throne signup email
+        <input id="throne-email-input" type="email" autocomplete="off" spellcheck="false" class="cp-input" placeholder="977csb86qd@privaterelay.appleid.com" style="text-transform:none;letter-spacing:0;font-weight:400" />
+      </label>
+      <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--ink2);margin-bottom:10px;cursor:pointer">
+        <input id="throne-email-backfill" type="checkbox" style="margin-top:3px" checked />
+        <span>Backfill voids from this email (recommended — pulls any sessions Throne already has on file).</span>
+      </label>
+      <div id="throne-email-status" style="font-size:12px;min-height:16px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn secondary sm" onclick="ssCloseSetThroneEmailModal()">Cancel</button>
+      <button class="btn primary sm" id="throne-email-confirm-btn" onclick="ssConfirmSetThroneEmail()">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="start-chat-overlay">
   <div class="modal">
     <div class="modal-head">
@@ -1667,6 +1702,12 @@ async function init() {
         withdrawnBy: extra.withdrawnBy || null,
         withdrawalReason: extra.withdrawalReason || null,
         patientDocId: extra.patientDocId || null,
+        // Throne signup email — the email Throne returns on session exports.
+        // Diverges from `email` (contact email) when the participant used
+        // Apple Hide-My-Email at Throne signup. Set by setParticipantThroneEmail
+        // (researcher correction) or by createParticipant (when supplied at
+        // enrollment time).
+        throneAccountEmail: extra.throneAccountEmail || null,
         pendingInvite: !uid,
         accountSource, dashboardCreated, appPathway,
         upcomingVisit: extra.upcomingVisit || null,
@@ -2669,13 +2710,38 @@ async function renderDeepDive(key) {
     else { withdrawBtn.disabled = false; withdrawBtn.textContent = '⊘ Withdraw'; }
   }
   const enrollmentDate = getEnrollmentDate(p);
+  // Throne signup email — only render when it differs from the contact
+  // email (most participants will have the two be equal). When unset on a
+  // claimable participant, surface an "+ Add Throne signup email" affordance
+  // so a researcher can correct a Hide-My-Email account inline without
+  // leaving the Deep Dive page.
+  const contactEmailNorm = (p.email || '').trim().toLowerCase();
+  const throneEmailNorm = (p.throneAccountEmail || '').trim().toLowerCase();
+  let throneEmailChip = null;
+  if (p.patientDocId) {
+    if (throneEmailNorm && throneEmailNorm !== contactEmailNorm) {
+      throneEmailChip =
+        `<span title="Email Throne returns on session exports — used to join Throne data to this participant">` +
+        `Throne signup: <span class="mono">${escapeHtml(throneEmailNorm)}</span>` +
+        ` <button type="button" onclick="ssOpenSetThroneEmailDialog()" ` +
+        `style="margin-left:6px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--ink2);padding:1px 8px;border-radius:6px;cursor:pointer">` +
+        `Edit</button></span>`;
+    } else {
+      throneEmailChip =
+        `<span><button type="button" onclick="ssOpenSetThroneEmailDialog()" ` +
+        `title="Use when the participant signed up to Throne with a different email (e.g. Apple Hide-My-Email)" ` +
+        `style="font-size:11px;background:transparent;border:1px dashed var(--border-strong);color:var(--ink2);padding:1px 8px;border-radius:6px;cursor:pointer">` +
+        `+ Throne signup email</button></span>`;
+    }
+  }
   const meta = [
     `<span class="mono">${escapeHtml(p.id)}</span>${p.mrn ? ` · ${escapeHtml(p.mrn)}` : ''}`,
     p.age ? `Age ${p.age}` : null,
     p.site ? escapeHtml(p.site) : null,
     enrollmentDate ? `Enrolled ${enrollmentDate.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' })} · day ${getDaysSince(enrollmentDate)}` : null,
     p.email ? escapeHtml(p.email) : null,
-  ].filter(Boolean).map((s) => `<span>${s}</span>`).join('');
+    throneEmailChip,
+  ].filter(Boolean).map((s) => s.startsWith('<span') ? s : `<span>${s}</span>`).join('');
   document.getElementById('dd-meta').innerHTML = meta;
 
   // Hero metrics
@@ -2888,6 +2954,110 @@ async function ssConfirmWithdraw() {
     showToast(`Withdrawal failed: ${e.message}`, '⚠️', 4200);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Confirm withdrawal'; }
+  }
+}
+
+// ─── Set Throne signup email ─────────────────────────────────────────
+//
+// Researcher-only correction path. When a participant signed up to Throne
+// with a different email than their Streamsync contact (most commonly
+// Apple Hide-My-Email), session exports from Throne carry the relay
+// address, not the contact email. Calling setParticipantThroneEmail
+// patches `patients/{id}.throneAccountEmail` + `users/{uid}.throneAccountEmail`
+// + `throne_research_participants/{email}` so the ingestion router can
+// join future and past sessions to this participant's record.
+//
+// On success, optionally invokes requestParticipantBackfill to pull any
+// sessions Throne already has under the new address. The Cloud Function
+// is idempotent — re-saving the same email is a no-op.
+function ssOpenSetThroneEmailDialog() {
+  if (!currentPatientKey || !patients[currentPatientKey]) { showToast('Open a participant first', '⚠️'); return; }
+  const p = patients[currentPatientKey];
+  if (!p.patientDocId) {
+    showToast('No patients/* record on this participant — create one first.', '⚠️', 4200);
+    return;
+  }
+  setText('throne-email-name', p.name || p.email || 'this participant');
+  const input = document.getElementById('throne-email-input');
+  if (input) {
+    // Pre-fill with whatever's currently set, OR the contact email if no
+    // separate Throne email exists yet (the common starting point — the
+    // researcher edits it to the Hide-My-Email address).
+    input.value = p.throneAccountEmail || p.email || '';
+  }
+  const backfillEl = document.getElementById('throne-email-backfill');
+  if (backfillEl) backfillEl.checked = true;
+  setText('throne-email-status', '');
+  document.getElementById('throne-email-overlay').classList.add('show');
+  setTimeout(() => input?.focus(), 50);
+}
+function ssCloseSetThroneEmailModal() {
+  document.getElementById('throne-email-overlay').classList.remove('show');
+}
+async function ssConfirmSetThroneEmail() {
+  if (!currentPatientKey || !patients[currentPatientKey]) return;
+  const p = patients[currentPatientKey];
+  const btn = document.getElementById('throne-email-confirm-btn');
+  const status = document.getElementById('throne-email-status');
+  const setStatus = (text, color) => { if (status) { status.textContent = text; status.style.color = color || 'var(--helper)'; } };
+
+  const raw = (document.getElementById('throne-email-input')?.value || '').trim().toLowerCase();
+  const shouldBackfill = document.getElementById('throne-email-backfill')?.checked !== false;
+
+  if (!raw) { setStatus('Throne signup email is required.', 'var(--red)'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) { setStatus('That does not look like a valid email.', 'var(--red)'); return; }
+  if (raw === (p.throneAccountEmail || '').trim().toLowerCase()) {
+    setStatus('No change — already set to that address.', 'var(--ink2)');
+    return;
+  }
+
+  const participantId = p.patientDocId;
+  if (!participantId) { setStatus('Cannot update — no patients/* record on this participant.', 'var(--red)'); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  setStatus('Updating Throne signup email…', 'var(--ink2)');
+  try {
+    const user = auth.currentUser;
+    if (!user) throw new Error('You must be signed in as a researcher.');
+    const token = await user.getIdToken();
+    const res = await fetch(getFunctionUrl('setParticipantThroneEmail'), {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ participantId, throneAccountEmail: raw }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.status !== 'ok') throw new Error(payload.message || `HTTP ${res.status}`);
+
+    // Update local cache so the Deep Dive hero refreshes immediately.
+    p.throneAccountEmail = payload.throneAccountEmail || raw;
+    setStatus(`Saved. Throne signup email set to ${p.throneAccountEmail}.`, 'var(--green)');
+    showToast('Throne signup email updated', '✅');
+
+    if (shouldBackfill) {
+      setStatus('Backfilling voids from Throne…', 'var(--ink2)');
+      try {
+        const backfill = await requestParticipantBackfill(p.throneAccountEmail, 180);
+        const count = backfill?.sessionCount ?? 0;
+        setStatus(`Backfill complete: ${count} session${count === 1 ? '' : 's'} pulled.`, 'var(--green)');
+        showToast(`Backfill: ${count} sessions`, '✅', 3600);
+      } catch (backfillErr) {
+        console.error('[setThroneEmail] backfill error', backfillErr);
+        setStatus(`Saved, but backfill failed: ${backfillErr?.message || backfillErr}`, 'var(--amber)');
+        showToast('Backfill failed — email is saved, you can retry from Refresh Throne', '⚠️', 4200);
+      }
+    }
+
+    setTimeout(() => {
+      ssCloseSetThroneEmailModal();
+      // Re-render so the new email shows on the Deep Dive hero.
+      renderDeepDive(currentPatientKey);
+    }, shouldBackfill ? 1500 : 700);
+  } catch (e) {
+    console.error('[setThroneEmail] failed', e);
+    setStatus(`Update failed: ${e.message}`, 'var(--red)');
+    showToast(`Update failed: ${e.message}`, '⚠️', 4200);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
   }
 }
 
