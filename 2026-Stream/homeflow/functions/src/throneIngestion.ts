@@ -231,6 +231,91 @@ async function fetchExportPage(
   return res.json() as Promise<ExportResponse>;
 }
 
+// Throne caps how many pages any single Export call may return. When the
+// requested gtTs→ltTs window covers too many records, the API replies with
+// HTTP 500 + `{"code":13,"message":"too many pages"}`. Rather than failing
+// the whole run, we narrow the window from the older end (so we always
+// prefer the *most recent* records) and retry — keeping pagination capped
+// at MAX_PAGES_PER_RUN total. Anything in the old half that gets dropped
+// stays dropped for this run; the next incremental run continues forward
+// from ltTs so we keep accumulating new voids over time.
+const TOO_MANY_PAGES_PATTERN = /too many pages/i;
+const MAX_PAGES_PER_RUN = 500;
+const MAX_WINDOW_BISECTIONS = 16;
+
+function isTooManyPagesError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  return TOO_MANY_PAGES_PATTERN.test(msg);
+}
+
+interface PagedFetchResult {
+  pages: ExportResponse[];
+  effectiveGtTs: string;
+  effectiveLtTs: string;
+  truncated: boolean;
+  bisections: number;
+}
+
+async function fetchExportPagesWindowed(
+  config: ThroneConfig,
+  initialGtTs: string,
+  initialLtTs: string,
+  maxPages = MAX_PAGES_PER_RUN,
+): Promise<PagedFetchResult> {
+  let gtTs = initialGtTs;
+  const ltTs = initialLtTs;
+  let bisections = 0;
+
+  for (;;) {
+    const pages: ExportResponse[] = [];
+    let pageIdx = 0;
+    let hasMore = true;
+    let windowFailed = false;
+
+    while (hasMore) {
+      try {
+        const data = await fetchExportPage(config, pageIdx, gtTs, ltTs);
+        pages.push(data);
+        logger.info(`Page ${pageIdx}: ${data.count} sessions, hasMore=${data.hasMore}`);
+        hasMore = data.hasMore;
+        pageIdx++;
+      } catch (err) {
+        if (isTooManyPagesError(err) && bisections < MAX_WINDOW_BISECTIONS) {
+          // Throne said the window is too big. Drop the older half and retry
+          // — we always keep the more-recent half.
+          const gtMs = new Date(gtTs).getTime();
+          const ltMs = new Date(ltTs).getTime();
+          if (!Number.isFinite(gtMs) || !Number.isFinite(ltMs) || ltMs <= gtMs) {
+            throw err;
+          }
+          const midMs = Math.floor((gtMs + ltMs) / 2);
+          const newGtTs = new Date(midMs).toISOString();
+          logger.warn(
+            `Throne returned "too many pages" for ${gtTs} → ${ltTs}; ` +
+            `narrowing window to ${newGtTs} → ${ltTs} (bisection ${bisections + 1}).`,
+          );
+          gtTs = newGtTs;
+          bisections++;
+          windowFailed = true;
+          break;
+        }
+        throw err;
+      }
+
+      if (pageIdx >= maxPages) {
+        logger.warn(`Reached MAX_PAGES_PER_RUN=${maxPages}; stopping pagination at the ${maxPages}-page cap.`);
+        return {pages, effectiveGtTs: gtTs, effectiveLtTs: ltTs, truncated: hasMore, bisections};
+      }
+    }
+
+    if (!windowFailed) {
+      return {pages, effectiveGtTs: gtTs, effectiveLtTs: ltTs, truncated: false, bisections};
+    }
+    // else loop again with the narrowed window
+  }
+}
+
 // ─── Normalization ───────────────────────────────────────────────────────────
 
 function normalizeValue(val: string): number | string {
@@ -475,34 +560,31 @@ export async function runThroneIngestion(
     logger.info(`Initial sync from ${gtTs}`);
   }
 
-  // Fetch all pages
-  const allPages: ExportResponse[] = [];
-  let page = 0;
-  let hasMore = true;
-
-  while (hasMore) {
-    const data = await fetchExportPage(config, page, gtTs, ltTs);
-    allPages.push(data);
-    logger.info(`Page ${page}: ${data.count} sessions, hasMore=${data.hasMore}`);
-    hasMore = data.hasMore;
-    page++;
-
-    if (page > 100) {
-      logger.warn("Exceeded 100 pages, stopping pagination");
-      break;
-    }
+  // Fetch all pages, with adaptive window-narrowing if Throne says "too many
+  // pages" and a hard cap at MAX_PAGES_PER_RUN total.
+  const {pages: allPages, effectiveGtTs, truncated, bisections} =
+    await fetchExportPagesWindowed(config, gtTs, ltTs);
+  if (bisections > 0) {
+    logger.warn(
+      `Throne window narrowed ${bisections}×: requested gtTs=${gtTs}, ` +
+      `effective gtTs=${effectiveGtTs}. Older voids in the dropped half are ` +
+      "not in this run; next incremental run resumes from ltTs.",
+    );
   }
 
   // Normalize
   const {sessions, metrics} = normalizeSessions(allPages, studyId);
   logger.info(`Normalized: ${sessions.length} sessions, ${metrics.length} metrics`);
 
-  // Write to user-scoped paths
+  // Write to user-scoped paths. writeToFirestore + getMissingEntries dedupes
+  // by Throne session/metric id, so re-ingesting the same window is a no-op.
   const writeResult = (sessions.length > 0 || metrics.length > 0) ?
     await writeToFirestore(db, sessions, metrics) :
     {sessionCount: 0, metricCount: 0};
 
-  // Advance study-level sync cursor
+  // Advance study-level sync cursor. Always advance to the requested ltTs
+  // — even when we had to bisect — so the next incremental run picks up new
+  // voids without re-paying the "too many pages" cost.
   const syncState: SyncState = {
     lastRunAt: now.toISOString(),
     lastLtTs: ltTs,
@@ -511,7 +593,12 @@ export async function runThroneIngestion(
     sessionCount: writeResult.sessionCount,
     metricCount: writeResult.metricCount,
   };
-  await syncRef.set(syncState, {merge: true});
+  await syncRef.set({
+    ...syncState,
+    lastWindowEffectiveGtTs: effectiveGtTs,
+    lastWindowBisections: bisections,
+    lastWindowTruncated: truncated,
+  }, {merge: true});
 
   return {sessionCount: writeResult.sessionCount, metricCount: writeResult.metricCount};
 }
@@ -575,9 +662,10 @@ export async function runThroneBackfillForEmail(
 
       hasMore = data.hasMore;
       page++;
-      if (page > 100) {
+      if (page > MAX_PAGES_PER_RUN) {
         throw new Error(
-          `Throne backfill exceeded 100 pages for ${windowStart.toISOString()} to ${windowEnd.toISOString()}`,
+          `Throne backfill exceeded ${MAX_PAGES_PER_RUN} pages for ` +
+          `${windowStart.toISOString()} to ${windowEnd.toISOString()}`,
         );
       }
     }
